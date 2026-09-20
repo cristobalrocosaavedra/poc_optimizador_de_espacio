@@ -16,7 +16,7 @@ import streamlit as st
 from optimizador.datos_simulados import generar_catalogo_paquetes, crear_avion
 from optimizador.empaquetado_3d import empaquetar_posicion
 from optimizador.entidades import Paquete
-from optimizador.optimizador_carga import optimizar
+from optimizador.optimizador_carga import optimizar, optimizar_con_meta
 from optimizador.visualizacion import figura_avion, figura_posicion
 
 st.set_page_config(page_title="Optimizador de carga aérea", layout="wide")
@@ -56,6 +56,26 @@ with st.sidebar:
         help="Margen que deja la Etapa A para que el empaquetado 3D real siempre pueda acomodar la carga.",
     )
     generar = st.button("🔄 Generar carga disponible", width='stretch')
+
+    st.divider()
+    st.header("Objetivo de optimización")
+    modo_optimizacion = st.radio(
+        "¿Qué hace el modelo?",
+        ["Maximizar ingreso", "Cumplir un monto objetivo"],
+        help=(
+            "Maximizar ingreso: el modelo elige la combinación de paquetes que deja la mayor "
+            "plata posible. Cumplir un monto objetivo: el ingreso ya viene decidido (p.ej. por "
+            "el área comercial) — el modelo selecciona paquetes hasta alcanzarlo y, con eso "
+            "garantizado, usa el espacio restante de la forma más eficiente posible."
+        ),
+    )
+    monto_objetivo = None
+    if modo_optimizacion == "Cumplir un monto objetivo":
+        monto_objetivo = st.number_input(
+            "Monto objetivo (USD)", min_value=0.0, value=20_000.0, step=1_000.0,
+            help="Meta mínima de ingreso a alcanzar. Si el catálogo/espacio no da para tanto, "
+            "se reporta cuánto falta.",
+        )
 
 if "df_paquetes" not in st.session_state or generar:
     base = generar_catalogo_paquetes(
@@ -157,7 +177,12 @@ st.divider()
 
 if st.button("🚀 Optimizar carga del avión", type="primary"):
     with st.spinner("Resolviendo modelo de asignación (MILP)..."):
-        resultado = optimizar(paquetes, avion, factor_seguridad_volumen=factor_seguridad)
+        if modo_optimizacion == "Cumplir un monto objetivo":
+            resultado = optimizar_con_meta(
+                paquetes, avion, monto_objetivo_usd=monto_objetivo, factor_seguridad_volumen=factor_seguridad,
+            )
+        else:
+            resultado = optimizar(paquetes, avion, factor_seguridad_volumen=factor_seguridad)
 
     barra = st.progress(0.0, text="Empaquetando en 3D...")
     empaques = []
@@ -184,20 +209,40 @@ if "resultado" in st.session_state:
     n_colocados_3d = sum(len(e.colocadas) for e in empaques)
     n_no_colocados_3d = sum(len(e.no_colocadas) for e in empaques)
     peso_total = sum(p.peso_kg for e in empaques for p in [c.paquete for c in e.colocadas])
+    vol_total = sum(c.paquete.volumen_m3 for e in empaques for c in e.colocadas)
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    es_modo_meta = resultado.monto_objetivo_usd is not None
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Ingreso total", f"${resultado.ingreso_total:,.0f}")
-    k2.metric(
-        "Utilización de ingreso",
-        f"{100 * resultado.ingreso_total / resultado.ingreso_potencial:.1f}%"
-        if resultado.ingreso_potencial else "—",
-    )
-    k3.metric("Cajas cargadas", f"{n_colocados_3d} / {len(paquetes)}")
-    k4.metric("Peso total cargado", f"{peso_total:,.0f} kg")
-    k5.metric(
+    if es_modo_meta:
+        k2.metric("Meta objetivo", f"${resultado.monto_objetivo_usd:,.0f}")
+        k3.metric(
+            "Cumple meta" if resultado.cumple_meta else "Falta para la meta",
+            "✅ Sí" if resultado.cumple_meta else f"${resultado.faltante_para_meta_usd:,.0f}",
+        )
+    else:
+        k2.metric(
+            "Utilización de ingreso",
+            f"{100 * resultado.ingreso_total / resultado.ingreso_potencial:.1f}%"
+            if resultado.ingreso_potencial else "—",
+        )
+        k3.metric("Cajas cargadas", f"{n_colocados_3d} / {len(paquetes)}")
+    k4.metric("Utilización de volumen", f"{100 * vol_total / avion.volumen_total_m3:.1f}%")
+    k5.metric("Peso total cargado", f"{peso_total:,.0f} kg")
+    k6.metric(
         "CG resultante",
         f"{resultado.brazo_resultante_m:.2f} m" if resultado.brazo_resultante_m else "—",
     )
+
+    if es_modo_meta:
+        st.caption(f"Cajas cargadas: {n_colocados_3d} / {len(paquetes)} — objetivo: alcanzar la meta y luego maximizar el uso de volumen y peso disponibles.")
+        if not resultado.cumple_meta:
+            st.warning(
+                f"No se alcanzó la meta de ${resultado.monto_objetivo_usd:,.0f}: con el catálogo y "
+                f"espacio disponibles, el máximo posible es ${resultado.ingreso_maximo_posible:,.0f} "
+                f"(faltan ${resultado.faltante_para_meta_usd:,.0f}). Agrega más cajas o revisa el catálogo."
+            )
 
     if n_no_colocados_3d:
         st.info(

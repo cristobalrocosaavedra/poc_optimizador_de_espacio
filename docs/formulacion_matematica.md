@@ -120,6 +120,41 @@ ponderado por peso debe estar entre `cg_min` y `cg_max`":
 Este modelo es **lineal entero mixto (MILP)** y se resuelve con `PuLP`
 (solver CBC, incluido).
 
+### 2.1 Variante: monto objetivo ya decidido
+
+En operación real, el ingreso a lograr no siempre es algo que el modelo deba
+maximizar: muchas veces el área comercial **ya decidió** cuánto debe
+facturar el vuelo, y entrega ese monto junto con el catálogo de paquetes
+disponibles. En ese caso la función objetivo original deja de tener
+sentido — el rol del modelo pasa a ser (a) seleccionar paquetes hasta
+alcanzar ese monto y (b) usar el espacio restante de la forma más eficiente
+posible. Esto se resuelve en dos fases, con el mismo conjunto de
+restricciones (1)-(6):
+
+**Fase 1 — techo de ingreso.** Se resuelve el modelo original (maximizar
+`Σ ingreso_i x_{i,p}`) para conocer el ingreso máximo posible
+`ingreso_max` con el catálogo y la capacidad disponibles. Esto determina si
+el monto objetivo `M` es alcanzable: el piso de ingreso a exigir es
+`piso = min(M, ingreso_max)`.
+
+**Fase 2 — maximizar espacio sujeto al piso de ingreso.** Se agrega la
+restricción `Σ ingreso_i x_{i,p} ≥ piso · (1 − ε)` (con `ε` una tolerancia
+pequeña, del orden del `gapRel` del solver — exigir el piso exacto vuelve la
+sola factibilidad muy difícil de resolver rápido) y se cambia la función
+objetivo a maximizar el aprovechamiento combinado de volumen y peso:
+
+```
+maximizar   (Σ_i Σ_p vol_i · x_{i,p}) / V_avión   +   (Σ_i Σ_p peso_i · x_{i,p}) / PesoMax_avión
+sujeto a    Σ_i Σ_p ingreso_i · x_{i,p}  ≥  piso · (1 − ε)
+            (1)-(6) igual que el modelo original
+```
+
+Si `piso` ya está prácticamente en `ingreso_max` (dentro de esa misma
+tolerancia), no queda margen real para reoptimizar por espacio sin
+sacrificar ingreso, así que se usa directamente el resultado de la Fase 1.
+Si el monto objetivo `M` no es alcanzable (`M > ingreso_max`), se reporta
+`faltante = M − ingreso_max`.
+
 ---
 
 ## 3. Etapa B — Empaquetado 3D por posición
