@@ -43,55 +43,54 @@ def empaquetar_posicion(
 ) -> ResultadoEmpaque:
     """Empaqueta los paquetes asignados a una posición usando bin-packing 3D real.
 
-    Si algún paquete no cabe geométricamente (raro, dado el margen de
-    seguridad de la Etapa A), se descartan primero los de menor densidad de
-    valor (ingreso / m3) y se reintenta, hasta que todo lo que queda cabe.
+    Se intenta un único empaquetado, priorizando (orden de carga) los
+    paquetes de mayor densidad de valor (ingreso / m3). Si alguno no cabe
+    geométricamente (raro, dado el margen de seguridad de la Etapa A),
+    queda reportado en `no_colocadas` — sin reintentos caja por caja, que
+    para pallets con muchos paquetes puede volverse extremadamente lento
+    (cada reintento vuelve a empaquetar todo desde cero).
     """
-    pendientes = sorted(paquetes, key=lambda p: p.densidad_valor, reverse=True)
-    no_colocadas: list[Paquete] = []
+    if not paquetes:
+        return ResultadoEmpaque(posicion=posicion, colocadas=[], no_colocadas=[])
 
-    while pendientes:
-        packer = Packer()
-        bin_ = Bin(
-            posicion.id,
-            posicion.largo_cm,
-            posicion.ancho_cm,
-            posicion.alto_max_cm,
-            posicion.peso_max_kg,
+    ordenados = sorted(paquetes, key=lambda p: p.densidad_valor, reverse=True)
+
+    packer = Packer()
+    bin_ = Bin(
+        posicion.id,
+        posicion.largo_cm,
+        posicion.ancho_cm,
+        posicion.alto_max_cm,
+        posicion.peso_max_kg,
+    )
+    packer.add_bin(bin_)
+    for paq in ordenados:
+        packer.add_item(
+            Item(paq.id, paq.largo_cm, paq.ancho_cm, paq.alto_cm, paq.peso_kg)
         )
-        packer.add_bin(bin_)
-        for paq in pendientes:
-            packer.add_item(
-                Item(paq.id, paq.largo_cm, paq.ancho_cm, paq.alto_cm, paq.peso_kg)
+    packer.pack(bigger_first=False, distribute_items=False, number_of_decimals=1)
+
+    bin_resultado = packer.bins[0]
+    paquetes_por_id = {p.id: p for p in ordenados}
+
+    colocadas = []
+    for item in bin_resultado.items:
+        paq = paquetes_por_id[item.name]
+        x, y, z = (float(c) for c in item.position)
+        largo, ancho, alto = _dimensiones_rotadas(item)
+        colocadas.append(
+            CajaColocada(
+                paquete=paq,
+                x_cm=x,
+                y_cm=y,
+                z_cm=z,
+                largo_cm=largo,
+                ancho_cm=ancho,
+                alto_cm=alto,
             )
-        packer.pack(bigger_first=True, distribute_items=False, number_of_decimals=1)
+        )
 
-        bin_resultado = packer.bins[0]
-        if not bin_resultado.unfitted_items:
-            colocadas = []
-            paquetes_por_id = {p.id: p for p in pendientes}
-            for item in bin_resultado.items:
-                paq = paquetes_por_id[item.name]
-                x, y, z = (float(c) for c in item.position)
-                largo, ancho, alto = _dimensiones_rotadas(item)
-                colocadas.append(
-                    CajaColocada(
-                        paquete=paq,
-                        x_cm=x,
-                        y_cm=y,
-                        z_cm=z,
-                        largo_cm=largo,
-                        ancho_cm=ancho,
-                        alto_cm=alto,
-                    )
-                )
-            return ResultadoEmpaque(
-                posicion=posicion, colocadas=colocadas, no_colocadas=no_colocadas
-            )
+    ids_colocados = {c.paquete.id for c in colocadas}
+    no_colocadas = [p for p in ordenados if p.id not in ids_colocados]
 
-        # Algo no cabe geométricamente: descarta la de menor densidad de valor y reintenta.
-        peor = min(pendientes, key=lambda p: p.densidad_valor)
-        pendientes.remove(peor)
-        no_colocadas.append(peor)
-
-    return ResultadoEmpaque(posicion=posicion, colocadas=[], no_colocadas=no_colocadas)
+    return ResultadoEmpaque(posicion=posicion, colocadas=colocadas, no_colocadas=no_colocadas)

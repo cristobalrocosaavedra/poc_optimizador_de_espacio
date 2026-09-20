@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import plotly.graph_objects as go
 
 from .empaquetado_3d import CajaColocada, ResultadoEmpaque
@@ -15,6 +16,11 @@ PALETA_PRODUCTOS = {
     "Crisantemos": "#8fbf6b",
     "Gypsophila": "#c9c9d4",
 }
+
+COLOR_FUSELAJE = "#aab4c2"
+COLOR_PISO = "#8d95a3"
+
+CAMARA_DEFECTO = dict(eye=dict(x=1.6, y=-1.7, z=0.9), up=dict(x=0, y=0, z=1))
 
 
 def _cubo_mesh(
@@ -35,7 +41,7 @@ def _cubo_mesh(
     )
 
 
-def _contorno_caja(x0, y0, z0, dx, dy, dz) -> go.Scatter3d:
+def _contorno_caja(x0, y0, z0, dx, dy, dz, color="#333", width=3) -> list[go.Scatter3d]:
     """Wireframe del contenedor (pallet o avión) para dar referencia de escala."""
     v = [
         (x0, y0, z0), (x0 + dx, y0, z0), (x0 + dx, y0 + dy, z0), (x0, y0 + dy, z0), (x0, y0, z0),
@@ -48,17 +54,99 @@ def _contorno_caja(x0, y0, z0, dx, dy, dz) -> go.Scatter3d:
         [(x0, y0 + dy, z0), (x0, y0 + dy, z0 + dz)],
     ]
     xs, ys, zs = zip(*v)
-    trazos = [go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color="#333", width=3), showlegend=False)]
+    trazos = [go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color=color, width=width), showlegend=False, hoverinfo="skip")]
     for arista in aristas_verticales:
         xa, ya, za = zip(*arista)
-        trazos.append(go.Scatter3d(x=xa, y=ya, z=za, mode="lines", line=dict(color="#333", width=3), showlegend=False))
+        trazos.append(
+            go.Scatter3d(x=xa, y=ya, z=za, mode="lines", line=dict(color=color, width=width), showlegend=False, hoverinfo="skip")
+        )
     return trazos
+
+
+def _placa_pallet(x0: float, y0: float, largo: float, ancho: float, z: float = 0.0) -> go.Mesh3d:
+    """Base metálica del pallet (la plancha de aluminio real de un ULD/pallet aéreo)."""
+    xs = [x0, x0 + largo, x0 + largo, x0]
+    ys = [y0, y0, y0 + ancho, y0 + ancho]
+    zs = [z, z, z, z]
+    return go.Mesh3d(
+        x=xs, y=ys, z=zs, i=[0, 0], j=[1, 2], k=[2, 3],
+        color=COLOR_PISO, opacity=0.75, flatshading=True,
+        hoverinfo="skip", showlegend=False, name="Base pallet",
+    )
+
+
+def _fuselaje(
+    largo_total: float,
+    y_centro: float,
+    radio: float,
+    margen_nariz: float,
+    margen_cola: float,
+    n_theta: int = 28,
+    n_x: int = 36,
+) -> go.Surface:
+    """Tubo del fuselaje (con nariz y cola achatadas) envolviendo la zona de carga.
+
+    Se modela como un cilindro cuyo piso de carga (z=0) queda como una cuerda baja
+    del círculo transversal, y cuyo radio se angosta suavemente en los extremos
+    para sugerir la nariz y la cola del avión.
+    """
+    x_ini = -margen_nariz
+    x_fin = largo_total + margen_cola
+    xs = np.linspace(x_ini, x_fin, n_x)
+    thetas = np.linspace(0, 2 * np.pi, n_theta)
+
+    def factor_ahusado(x: float) -> float:
+        if x < 0:
+            t = np.clip(x / -margen_nariz, 0.0, 1.0) if margen_nariz else 1.0
+            return 0.15 + 0.85 * (1 - (1 - t) ** 2.2)
+        if x > largo_total:
+            t = np.clip((x - largo_total) / margen_cola, 0.0, 1.0) if margen_cola else 1.0
+            return 0.15 + 0.85 * (1 - t**2.2)
+        return 1.0
+
+    # El piso de carga (z=0) queda como una cuerda baja del círculo transversal
+    # (no su punto más bajo), como en un avión real donde el piso de bodega no
+    # pasa por el fondo exacto del fuselaje. coef_piso controla esa proporción,
+    # y se mantiene constante al angostar nariz/cola para que la sección se vea
+    # consistente en todo el largo.
+    coef_piso = 0.55
+    X = np.tile(xs.reshape(-1, 1), (1, n_theta))
+    R = np.array([radio * factor_ahusado(x) for x in xs]).reshape(-1, 1)
+    Z_centro = coef_piso * R
+    Y = y_centro + R * np.cos(thetas).reshape(1, -1)
+    Z = Z_centro + R * np.sin(thetas).reshape(1, -1)
+
+    return go.Surface(
+        x=X, y=Y, z=Z,
+        colorscale=[[0, COLOR_FUSELAJE], [1, COLOR_FUSELAJE]],
+        showscale=False, opacity=0.35,
+        lighting=dict(ambient=0.95, diffuse=0.2, specular=0.05, roughness=0.9),
+        contours=dict(
+            x=dict(show=True, color="#7c8798", width=1),
+            y=dict(show=False),
+            z=dict(show=False),
+        ),
+        hoverinfo="skip", name="Fuselaje",
+    )
+
+
+def _piso_carga(x_ini: float, x_fin: float, y_ini: float, y_fin: float) -> go.Mesh3d:
+    """Piso plano de la bodega de carga, de referencia visual."""
+    xs = [x_ini, x_fin, x_fin, x_ini]
+    ys = [y_ini, y_ini, y_fin, y_fin]
+    zs = [0, 0, 0, 0]
+    return go.Mesh3d(
+        x=xs, y=ys, z=zs, i=[0, 0], j=[1, 2], k=[2, 3],
+        color=COLOR_PISO, opacity=0.35, flatshading=True,
+        hoverinfo="skip", showlegend=False, name="Piso de carga",
+    )
 
 
 def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
     """Figura 3D de una sola posición de pallet con sus cajas colocadas."""
     pos = resultado.posicion
     fig = go.Figure()
+    fig.add_trace(_placa_pallet(0, 0, pos.largo_cm, pos.ancho_cm))
     for trazo in _contorno_caja(0, 0, 0, pos.largo_cm, pos.ancho_cm, pos.alto_max_cm):
         fig.add_trace(trazo)
 
@@ -82,6 +170,7 @@ def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
             yaxis_title="Ancho (cm)",
             zaxis_title="Alto (cm)",
             aspectmode="data",
+            camera=CAMARA_DEFECTO,
         ),
         margin=dict(l=0, r=0, t=30, b=0),
         showlegend=False,
@@ -93,14 +182,28 @@ def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
 def figura_avion(
     resultados_por_posicion: list[ResultadoEmpaque], separacion_cm: float = 40.0
 ) -> go.Figure:
-    """Figura 3D con todas las posiciones del avión distribuidas a lo largo del fuselaje."""
+    """Figura 3D con todas las posiciones del avión distribuidas a lo largo del fuselaje,
+    envueltas en un fuselaje esquemático (nariz, cola y piso de carga) para dar contexto
+    realista de "esto va dentro de un avión"."""
     fig = go.Figure()
     x_actual = 0.0
+    ancho_max = max(r.posicion.ancho_cm for r in resultados_por_posicion)
+    alto_max = max(r.posicion.alto_max_cm for r in resultados_por_posicion)
 
     for resultado in resultados_por_posicion:
         pos = resultado.posicion
-        for trazo in _contorno_caja(x_actual, 0, 0, pos.largo_cm, pos.ancho_cm, pos.alto_max_cm):
+        fig.add_trace(_placa_pallet(x_actual, 0, pos.largo_cm, pos.ancho_cm))
+        for trazo in _contorno_caja(x_actual, 0, 0, pos.largo_cm, pos.ancho_cm, pos.alto_max_cm, color="#555", width=2):
             fig.add_trace(trazo)
+
+        # Etiqueta flotante con el ID del pallet, sobre la carga.
+        fig.add_trace(
+            go.Scatter3d(
+                x=[x_actual + pos.largo_cm / 2], y=[pos.ancho_cm / 2], z=[pos.alto_max_cm + 35],
+                mode="text", text=[pos.id], textfont=dict(size=11, color="#333"),
+                showlegend=False, hoverinfo="skip",
+            )
+        )
 
         for caja in resultado.colocadas:
             color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, "#999999")
@@ -117,6 +220,19 @@ def figura_avion(
             )
         x_actual += pos.largo_cm + separacion_cm
 
+    largo_total = x_actual - separacion_cm
+    margen_nariz = max(largo_total * 0.16, 350.0)
+    margen_cola = max(largo_total * 0.10, 220.0)
+    radio_fuselaje = max(ancho_max, alto_max * 1.8) * 0.62
+
+    fig.add_trace(_piso_carga(-margen_nariz * 0.4, largo_total + margen_cola * 0.4, -20, ancho_max + 20))
+    fig.add_trace(
+        _fuselaje(
+            largo_total, y_centro=ancho_max / 2, radio=radio_fuselaje,
+            margen_nariz=margen_nariz, margen_cola=margen_cola,
+        )
+    )
+
     # Leyenda manual por tipo de producto (los Mesh3d no generan leyenda limpia).
     for producto, color in PALETA_PRODUCTOS.items():
         fig.add_trace(
@@ -132,6 +248,7 @@ def figura_avion(
             yaxis_title="Ancho (cm)",
             zaxis_title="Alto (cm)",
             aspectmode="data",
+            camera=CAMARA_DEFECTO,
         ),
         margin=dict(l=0, r=0, t=30, b=0),
         legend=dict(itemsizing="constant"),
