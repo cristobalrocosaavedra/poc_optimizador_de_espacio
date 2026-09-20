@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import plotly.graph_objects as go
 
-from .empaquetado_3d import CajaColocada, ResultadoEmpaque
-from .entidades import PosicionCarga
+from .empaquetado_3d import ResultadoEmpaque
+from .entidades import BandaAltura, Paquete
 
 PALETA_PRODUCTOS = {
     "Rosas": "#e05263",
@@ -19,6 +19,8 @@ PALETA_PRODUCTOS = {
 
 COLOR_FUSELAJE = "#aab4c2"
 COLOR_PISO = "#8d95a3"
+COLOR_RIESGO = "#d7263d"
+COLOR_NO_APILABLE = "#e08a00"
 
 CAMARA_DEFECTO = dict(eye=dict(x=1.6, y=-1.7, z=0.9), up=dict(x=0, y=0, z=1))
 
@@ -42,7 +44,7 @@ def _cubo_mesh(
 
 
 def _contorno_caja(x0, y0, z0, dx, dy, dz, color="#333", width=3) -> list[go.Scatter3d]:
-    """Wireframe del contenedor (pallet o avión) para dar referencia de escala."""
+    """Wireframe de una caja (pallet, banda de contorno, o avión) de referencia."""
     v = [
         (x0, y0, z0), (x0 + dx, y0, z0), (x0 + dx, y0 + dy, z0), (x0, y0 + dy, z0), (x0, y0, z0),
         (x0, y0, z0 + dz), (x0 + dx, y0, z0 + dz), (x0 + dx, y0 + dy, z0 + dz), (x0, y0 + dy, z0 + dz),
@@ -63,6 +65,17 @@ def _contorno_caja(x0, y0, z0, dx, dy, dz, color="#333", width=3) -> list[go.Sca
     return trazos
 
 
+def _contorno_pallet(x0: float, y0: float, bandas: list[BandaAltura], largo_cm: float, color="#555", width=2) -> list[go.Scatter3d]:
+    """Wireframe del pallet completo, banda por banda — dibuja el contorno real
+    (recortado hacia el fuselaje) en vez de una caja rectangular pareja."""
+    trazos = []
+    for banda in bandas:
+        trazos.extend(
+            _contorno_caja(x0, y0 + banda.offset_y_cm, 0, largo_cm, banda.ancho_cm, banda.alto_cm, color=color, width=width)
+        )
+    return trazos
+
+
 def _placa_pallet(x0: float, y0: float, largo: float, ancho: float, z: float = 0.0) -> go.Mesh3d:
     """Base metálica del pallet (la plancha de aluminio real de un ULD/pallet aéreo)."""
     xs = [x0, x0 + largo, x0 + largo, x0]
@@ -73,6 +86,40 @@ def _placa_pallet(x0: float, y0: float, largo: float, ancho: float, z: float = 0
         color=COLOR_PISO, opacity=0.75, flatshading=True,
         hoverinfo="skip", showlegend=False, name="Base pallet",
     )
+
+
+def _marcadores_especiales(puntos: list[tuple[float, float, float, Paquete]]) -> list[go.Scatter3d]:
+    """Marca carga de alto riesgo / no apilable con un símbolo flotante sobre la caja.
+
+    Se agrupan TODOS los puntos en, como máximo, dos trazas (una por categoría) en
+    vez de una traza por caja — con miles de cajas, una traza por caja vuelve el
+    gráfico lento de rotar/zoomear en el navegador.
+    """
+    riesgo = [(x, y, z, p) for x, y, z, p in puntos if p.riesgo_alto]
+    no_apilable = [(x, y, z, p) for x, y, z, p in puntos if not p.riesgo_alto and not p.apilable]
+
+    trazos = []
+    if riesgo:
+        xs, ys, zs, ps = zip(*riesgo)
+        trazos.append(
+            go.Scatter3d(
+                x=xs, y=ys, z=zs, mode="markers",
+                marker=dict(size=4, color=COLOR_RIESGO, symbol="diamond"),
+                hovertext=[f"⚠ {p.id} — alto riesgo (no apilable)" for p in ps],
+                hoverinfo="text", name="Alto riesgo",
+            )
+        )
+    if no_apilable:
+        xs, ys, zs, ps = zip(*no_apilable)
+        trazos.append(
+            go.Scatter3d(
+                x=xs, y=ys, z=zs, mode="markers",
+                marker=dict(size=3.5, color=COLOR_NO_APILABLE, symbol="circle"),
+                hovertext=[f"🚫 {p.id} — no apilable" for p in ps],
+                hoverinfo="text", name="No apilable",
+            )
+        )
+    return trazos
 
 
 def _fuselaje(
@@ -147,14 +194,17 @@ def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
     pos = resultado.posicion
     fig = go.Figure()
     fig.add_trace(_placa_pallet(0, 0, pos.largo_cm, pos.ancho_cm))
-    for trazo in _contorno_caja(0, 0, 0, pos.largo_cm, pos.ancho_cm, pos.alto_max_cm):
+    for trazo in _contorno_pallet(0, 0, pos.bandas, pos.largo_cm):
         fig.add_trace(trazo)
 
+    puntos_especiales = []
     for caja in resultado.colocadas:
         color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, "#999999")
         texto = (
             f"{caja.paquete.id}<br>{caja.paquete.tipo_producto} · {caja.paquete.cliente}"
             f"<br>{caja.paquete.peso_kg} kg · ${caja.paquete.ingreso_usd:,.0f}"
+            f"<br>{'apilable' if caja.paquete.apilable else 'NO apilable'}"
+            f"{' · ⚠ alto riesgo' if caja.paquete.riesgo_alto else ''}"
         )
         fig.add_trace(
             _cubo_mesh(
@@ -163,6 +213,12 @@ def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
                 color, texto,
             )
         )
+        puntos_especiales.append(
+            (caja.x_cm + caja.largo_cm / 2, caja.y_cm + caja.ancho_cm / 2, caja.z_cm + caja.alto_cm + 3, caja.paquete)
+        )
+
+    for trazo in _marcadores_especiales(puntos_especiales):
+        fig.add_trace(trazo)
 
     fig.update_layout(
         scene=dict(
@@ -173,8 +229,8 @@ def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
             camera=CAMARA_DEFECTO,
         ),
         margin=dict(l=0, r=0, t=30, b=0),
-        showlegend=False,
-        title=f"Posición {pos.id} — {len(resultado.colocadas)} cajas",
+        legend=dict(itemsizing="constant"),
+        title=f"Posición {pos.id} — {len(resultado.colocadas)} cajas (contorno: {pos.lado})",
     )
     return fig
 
@@ -182,56 +238,74 @@ def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
 def figura_avion(
     resultados_por_posicion: list[ResultadoEmpaque], separacion_cm: float = 40.0
 ) -> go.Figure:
-    """Figura 3D con todas las posiciones del avión distribuidas a lo largo del fuselaje,
-    envueltas en un fuselaje esquemático (nariz, cola y piso de carga) para dar contexto
-    realista de "esto va dentro de un avión"."""
+    """Figura 3D con todas las posiciones del avión distribuidas a lo largo del
+    fuselaje, agrupadas por estación (izquierdo/derecho comparten la misma
+    posición longitudinal), envueltas en un fuselaje esquemático con nariz,
+    cola y contorno de pallet realista."""
     fig = go.Figure()
-    x_actual = 0.0
-    ancho_max = max(r.posicion.ancho_cm for r in resultados_por_posicion)
+
+    estaciones: dict[int, list[ResultadoEmpaque]] = {}
+    for r in resultados_por_posicion:
+        estaciones.setdefault(r.posicion.estacion, []).append(r)
+
+    ancho_seccion = max(r.posicion.y_offset_cm + r.posicion.ancho_cm for r in resultados_por_posicion)
     alto_max = max(r.posicion.alto_max_cm for r in resultados_por_posicion)
 
-    for resultado in resultados_por_posicion:
-        pos = resultado.posicion
-        fig.add_trace(_placa_pallet(x_actual, 0, pos.largo_cm, pos.ancho_cm))
-        for trazo in _contorno_caja(x_actual, 0, 0, pos.largo_cm, pos.ancho_cm, pos.alto_max_cm, color="#555", width=2):
-            fig.add_trace(trazo)
+    puntos_especiales: list[tuple[float, float, float, Paquete]] = []
+    x_actual = 0.0
 
-        # Etiqueta flotante con el ID del pallet, sobre la carga.
-        fig.add_trace(
-            go.Scatter3d(
-                x=[x_actual + pos.largo_cm / 2], y=[pos.ancho_cm / 2], z=[pos.alto_max_cm + 35],
-                mode="text", text=[pos.id], textfont=dict(size=11, color="#333"),
-                showlegend=False, hoverinfo="skip",
-            )
-        )
+    for estacion_id in sorted(estaciones):
+        grupo = estaciones[estacion_id]
+        largo_estacion = max(r.posicion.largo_cm for r in grupo)
 
-        for caja in resultado.colocadas:
-            color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, "#999999")
-            texto = (
-                f"{caja.paquete.id} · pallet {pos.id}<br>{caja.paquete.tipo_producto}"
-                f"<br>{caja.paquete.peso_kg} kg · ${caja.paquete.ingreso_usd:,.0f}"
-            )
+        for resultado in grupo:
+            pos = resultado.posicion
+            fig.add_trace(_placa_pallet(x_actual, pos.y_offset_cm, pos.largo_cm, pos.ancho_cm))
+            for trazo in _contorno_pallet(x_actual, pos.y_offset_cm, pos.bandas, pos.largo_cm, color="#555", width=2):
+                fig.add_trace(trazo)
+
             fig.add_trace(
-                _cubo_mesh(
-                    x_actual + caja.x_cm, caja.y_cm, caja.z_cm,
-                    caja.largo_cm, caja.ancho_cm, caja.alto_cm,
-                    color, texto,
+                go.Scatter3d(
+                    x=[x_actual + pos.largo_cm / 2], y=[pos.y_offset_cm + pos.ancho_cm / 2], z=[pos.alto_max_cm + 35],
+                    mode="text", text=[pos.id], textfont=dict(size=10, color="#333"),
+                    showlegend=False, hoverinfo="skip",
                 )
             )
-        x_actual += pos.largo_cm + separacion_cm
+
+            for caja in resultado.colocadas:
+                color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, "#999999")
+                texto = (
+                    f"{caja.paquete.id} · pallet {pos.id}<br>{caja.paquete.tipo_producto}"
+                    f"<br>{caja.paquete.peso_kg} kg · ${caja.paquete.ingreso_usd:,.0f}"
+                    f"<br>{'apilable' if caja.paquete.apilable else 'NO apilable'}"
+                    f"{' · ⚠ alto riesgo' if caja.paquete.riesgo_alto else ''}"
+                )
+                x0 = x_actual + caja.x_cm
+                y0 = pos.y_offset_cm + caja.y_cm
+                fig.add_trace(
+                    _cubo_mesh(x0, y0, caja.z_cm, caja.largo_cm, caja.ancho_cm, caja.alto_cm, color, texto)
+                )
+                puntos_especiales.append(
+                    (x0 + caja.largo_cm / 2, y0 + caja.ancho_cm / 2, caja.z_cm + caja.alto_cm + 3, caja.paquete)
+                )
+
+        x_actual += largo_estacion + separacion_cm
 
     largo_total = x_actual - separacion_cm
     margen_nariz = max(largo_total * 0.16, 350.0)
     margen_cola = max(largo_total * 0.10, 220.0)
-    radio_fuselaje = max(ancho_max, alto_max * 1.8) * 0.62
+    radio_fuselaje = max(ancho_seccion, alto_max * 1.8) * 0.62
 
-    fig.add_trace(_piso_carga(-margen_nariz * 0.4, largo_total + margen_cola * 0.4, -20, ancho_max + 20))
+    fig.add_trace(_piso_carga(-margen_nariz * 0.4, largo_total + margen_cola * 0.4, -20, ancho_seccion + 20))
     fig.add_trace(
         _fuselaje(
-            largo_total, y_centro=ancho_max / 2, radio=radio_fuselaje,
+            largo_total, y_centro=ancho_seccion / 2, radio=radio_fuselaje,
             margen_nariz=margen_nariz, margen_cola=margen_cola,
         )
     )
+
+    for trazo in _marcadores_especiales(puntos_especiales):
+        fig.add_trace(trazo)
 
     # Leyenda manual por tipo de producto (los Mesh3d no generan leyenda limpia).
     for producto, color in PALETA_PRODUCTOS.items():
@@ -252,6 +326,6 @@ def figura_avion(
         ),
         margin=dict(l=0, r=0, t=30, b=0),
         legend=dict(itemsizing="constant"),
-        title="Distribución de carga en el avión",
+        title="Distribución de carga en el avión (contorno real + izquierdo/derecho)",
     )
     return fig

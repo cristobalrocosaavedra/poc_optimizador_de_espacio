@@ -19,6 +19,8 @@ class Paquete:
     alto_cm: float
     ingreso_usd: float
     obligatorio: bool = False
+    apilable: bool = True
+    riesgo_alto: bool = False
 
     @property
     def volumen_m3(self) -> float:
@@ -30,6 +32,26 @@ class Paquete:
         vol = self.volumen_m3
         return self.ingreso_usd / vol if vol > 0 else 0.0
 
+    @property
+    def permite_apilado_encima(self) -> bool:
+        """Si se puede apoyar otra caja encima. La carga de alto riesgo nunca lo permite."""
+        return self.apilable and not self.riesgo_alto
+
+
+@dataclass
+class BandaAltura:
+    """Una franja transversal del pallet con su propia altura máxima utilizable.
+
+    Modela el "contorno" real de un pallet de carga aérea: junto al fuselaje
+    (curvo) la altura de estiba se recorta, mientras que hacia el pasillo o
+    quilla central se mantiene la altura completa. `offset_y_cm` es la
+    posición de partida de la franja a lo ancho del pallet (0 = un borde).
+    """
+
+    ancho_cm: float
+    alto_cm: float
+    offset_y_cm: float
+
 
 @dataclass
 class PosicionCarga:
@@ -40,11 +62,20 @@ class PosicionCarga:
     largo_cm: float
     ancho_cm: float
     alto_max_cm: float
-    brazo_m: float  # brazo de momento respecto a la referencia del avión
+    brazo_m: float  # brazo de momento respecto a la referencia del avión (longitudinal)
+    estacion: int = 0  # agrupa posiciones que comparten la misma "fila" a lo largo del fuselaje
+    lado: str = "centro"  # "izquierdo" | "derecho" | "centro"
+    y_offset_cm: float = 0.0  # posición lateral dentro de la sección transversal del avión
+    bandas: list[BandaAltura] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.bandas:
+            # Sin contorno definido: pallet rectangular simple (compatibilidad).
+            self.bandas = [BandaAltura(self.ancho_cm, self.alto_max_cm, 0.0)]
 
     @property
     def volumen_max_m3(self) -> float:
-        return (self.largo_cm * self.ancho_cm * self.alto_max_cm) / 1_000_000.0
+        return sum(b.ancho_cm * b.alto_cm * self.largo_cm for b in self.bandas) / 1_000_000.0
 
 
 @dataclass

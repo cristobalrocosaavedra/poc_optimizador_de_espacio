@@ -88,6 +88,13 @@ maximizar   Σ_i Σ_p  ingreso_i · x_{i,p}
 Σ_i vol_i · x_{i,p}  ≤  f_seg · V_p     ∀ p
 ```
 
+`V_p` ya no es un simple `largo × ancho × alto`: cada posición tiene un
+**contorno** (ver sección 3) que recorta la altura útil hacia el fuselaje,
+así que `V_p` es la suma del volumen de cada banda del contorno. Dos
+posiciones con la misma huella en planta pueden tener `V_p` distinto según
+si están junto al fuselaje (contorno más agresivo) o hacia el
+pasillo/quilla central.
+
 **(4) Payload máximo total del avión:**
 ```
 Σ_p Σ_i peso_i · x_{i,p}  ≤  PesoMax_avión
@@ -117,21 +124,64 @@ Este modelo es **lineal entero mixto (MILP)** y se resuelve con `PuLP`
 
 ## 3. Etapa B — Empaquetado 3D por posición
 
+### 3.1 Contorno del pallet (bandas)
+
+Un pallet real de carga aérea no es una caja recta: junto al fuselaje (curvo)
+la altura de estiba se recorta, y se mantiene completa hacia el pasillo o la
+quilla central. Cada `PosicionCarga` modela esto como una lista de **bandas**
+transversales — franjas del pallet, cada una con su propio ancho y su propia
+altura máxima:
+
+```
+banda_k = (ancho_k, alto_k, offset_y_k)      k = 1..K
+V_p = Σ_k  largo_p · ancho_k · alto_k
+```
+
+Una posición junto al fuselaje (`lado = izquierdo/derecho`) usa 2 bandas
+(borde exterior bajo, interior alto); una posición central en una sola fila
+(`lado = centro`) usa 3 (bajo–alto–bajo, simétrica). El resultado se ve como
+un perfil escalonado en vez de una caja pareja — una aproximación razonable
+del contorno real sin necesitar geometría curva exacta.
+
+### 3.2 Empaquetado y apilamiento
+
 Para cada posición `p`, con el conjunto de paquetes que la Etapa A le asignó:
 
-1. Se define un contenedor (`Bin`) con las dimensiones físicas de la
-   posición `(largo_p, ancho_p, alto_p)` y su capacidad de peso `W_p`.
+1. Cada banda del contorno se modela como un contenedor (`Bin` de `py3dbp`)
+   independiente, con sus propias dimensiones `(largo_p, ancho_k, alto_k)` y
+   la capacidad de peso `W_p` de la posición.
 2. Cada paquete asignado se modela como una caja (`Item`) con sus
-   dimensiones `(largo_i, ancho_i, alto_i)` y peso `peso_i`.
-3. Se corre el algoritmo de bin-packing 3D (`py3dbp`, heurística *guillotine
-   + best-fit*) para obtener la posición `(x, y, z)` de cada caja dentro
-   del pallet.
-4. Si el algoritmo no logra ubicar alguna caja (el volumen agregado cabía,
-   pero la geometría no), esa caja se remueve empezando por la de menor
-   `ingreso_i / vol_i` (peor "densidad de valor") y se reintenta.
+   dimensiones `(largo_i, ancho_i, alto_i)` y peso `peso_i`, ordenados por
+   densidad de valor (`ingreso_i / vol_i`) y repartidos entre bandas: la
+   primera banda recibe lo que le quepa, el resto pasa a la siguiente.
+3. Dentro de cada banda se corre una heurística de bin-packing 3D (misma
+   lógica de pivotes esquina-a-esquina de `py3dbp`), pero con una restricción
+   adicional: **nada puede quedar apoyado sobre un paquete con
+   `apilable = false` o `riesgo_alto = true`.** Se verifica en ambos
+   sentidos — un paquete no se coloca encima de uno no apilable ya puesto, y
+   un paquete no apilable tampoco se coloca justo debajo de algo que ya
+   estaba ahí (los paquetes no se procesan por altura, sino por densidad de
+   valor, así que puede llegar en cualquier orden).
+4. Si una caja no logra ubicarse en ninguna banda (el volumen agregado
+   cabía, pero la geometría o la restricción de apilamiento no lo permitió),
+   queda reportada como no colocada.
+
+`riesgo_alto` implica siempre `apilable = false` (la carga de alto riesgo
+nunca admite nada encima), y además se marca de forma distinta en la
+visualización 3D.
 
 El resultado final es, por avión: qué paquetes viajan, en qué pallet, en qué
 coordenadas dentro del pallet — listo para visualizar en 3D.
+
+### 3.3 Límite conocido de esta aproximación
+
+La heurística de `py3dbp` no simula gravedad ni contacto físico real: dos
+cajas pueden coincidir en la misma altura por caminos de colocación
+distintos sin que haya, en sentido estricto, una que "sostenga" a la otra.
+El chequeo de apilamiento de esta POC filtra los casos donde de verdad hay
+solape de huella (x, y) y contacto exacto en altura, que cubre el caso
+práctico relevante, pero no reemplaza una validación de estabilidad física
+completa.
 
 ---
 

@@ -15,6 +15,7 @@ import streamlit as st
 
 from optimizador.datos_simulados import generar_catalogo_paquetes, crear_avion
 from optimizador.empaquetado_3d import empaquetar_posicion
+from optimizador.entidades import Paquete
 from optimizador.optimizador_carga import optimizar
 from optimizador.visualizacion import figura_avion, figura_posicion
 
@@ -42,44 +43,114 @@ with st.sidebar:
     )
     seed = st.number_input("Semilla aleatoria", value=42, step=1)
     pct_obligatorio = st.slider("% de cajas con contrato obligatorio", 0, 40, 10) / 100.0
+    pct_no_apilable = st.slider(
+        "% de cajas no apilables", 0, 50, 15,
+        help="Cajas sobre las que no se puede apoyar otra caja (delicadas, top-heavy, etc.).",
+    ) / 100.0
+    pct_riesgo_alto = st.slider(
+        "% de carga de alto riesgo", 0, 30, 6,
+        help="Carga frágil/sensible: siempre no apilable, y se marca en el 3D con ⚠.",
+    ) / 100.0
     factor_seguridad = st.slider(
         "Factor de seguridad de volumen por pallet", 0.5, 1.0, 0.85, step=0.05,
         help="Margen que deja la Etapa A para que el empaquetado 3D real siempre pueda acomodar la carga.",
     )
     generar = st.button("🔄 Generar carga disponible", width='stretch')
 
-if "paquetes" not in st.session_state or generar:
-    st.session_state["paquetes"] = generar_catalogo_paquetes(
-        n=n_paquetes, seed=int(seed), pct_obligatorio=pct_obligatorio
+if "df_paquetes" not in st.session_state or generar:
+    base = generar_catalogo_paquetes(
+        n=n_paquetes, seed=int(seed), pct_obligatorio=pct_obligatorio,
+        pct_no_apilable=pct_no_apilable, pct_riesgo_alto=pct_riesgo_alto,
+    )
+    st.session_state["df_paquetes"] = pd.DataFrame(
+        [
+            dict(
+                id=p.id, producto=p.tipo_producto, cliente=p.cliente, destino=p.destino,
+                peso_kg=p.peso_kg, largo_cm=p.largo_cm, ancho_cm=p.ancho_cm, alto_cm=p.alto_cm,
+                ingreso_usd=p.ingreso_usd, obligatorio=p.obligatorio,
+                apilable=p.apilable, riesgo_alto=p.riesgo_alto,
+            )
+            for p in base
+        ]
     )
     st.session_state.pop("resultado", None)
 
-paquetes = st.session_state["paquetes"]
 avion = crear_avion(modelo_avion)
 
 col_izq, col_der = st.columns([1, 1])
 with col_izq:
     st.subheader("Catálogo de carga disponible")
-    df_paquetes = pd.DataFrame(
-        [
-            dict(
-                id=p.id, producto=p.tipo_producto, cliente=p.cliente, destino=p.destino,
-                peso_kg=p.peso_kg, volumen_m3=round(p.volumen_m3, 3),
-                ingreso_usd=p.ingreso_usd, obligatorio=p.obligatorio,
-            )
-            for p in paquetes
-        ]
+    st.caption(
+        "Tabla editable: corrige valores, borra filas (selecciona + tecla Supr) o agrega "
+        "cajas nuevas con el ➕ al final de la tabla."
     )
-    st.dataframe(df_paquetes, width='stretch', height=300)
-    st.metric("Ingreso potencial (si cupiera todo)", f"${df_paquetes['ingreso_usd'].sum():,.0f}")
+    df_editado = st.data_editor(
+        st.session_state["df_paquetes"],
+        num_rows="dynamic",
+        key="editor_paquetes",
+        width='stretch',
+        height=300,
+        column_config={
+            "id": st.column_config.TextColumn("ID", help="Déjalo vacío en filas nuevas y se autogenera."),
+            "producto": st.column_config.TextColumn("Producto"),
+            "cliente": st.column_config.TextColumn("Cliente"),
+            "destino": st.column_config.TextColumn("Destino"),
+            "peso_kg": st.column_config.NumberColumn("Peso (kg)", min_value=0.01, format="%.2f"),
+            "largo_cm": st.column_config.NumberColumn("Largo (cm)", min_value=1.0, format="%.1f"),
+            "ancho_cm": st.column_config.NumberColumn("Ancho (cm)", min_value=1.0, format="%.1f"),
+            "alto_cm": st.column_config.NumberColumn("Alto (cm)", min_value=1.0, format="%.1f"),
+            "ingreso_usd": st.column_config.NumberColumn("Ingreso (USD)", min_value=0.0, format="%.2f"),
+            "obligatorio": st.column_config.CheckboxColumn("Obligatorio"),
+            "apilable": st.column_config.CheckboxColumn("Apilable"),
+            "riesgo_alto": st.column_config.CheckboxColumn("Alto riesgo"),
+        },
+    )
+
+    paquetes: list[Paquete] = []
+    filas_invalidas = 0
+    for idx, fila in df_editado.reset_index(drop=True).iterrows():
+        try:
+            campos_obligatorios = [fila["peso_kg"], fila["largo_cm"], fila["ancho_cm"], fila["alto_cm"], fila["ingreso_usd"]]
+            if any(pd.isna(v) for v in campos_obligatorios):
+                raise ValueError("faltan campos numéricos")
+            id_fila = str(fila["id"]).strip() if pd.notna(fila["id"]) and str(fila["id"]).strip() else f"MANUAL-{idx + 1:04d}"
+            paquetes.append(
+                Paquete(
+                    id=id_fila,
+                    tipo_producto=str(fila["producto"]) if pd.notna(fila["producto"]) else "Otro",
+                    cliente=str(fila["cliente"]) if pd.notna(fila["cliente"]) else "Cliente manual",
+                    destino=str(fila["destino"]) if pd.notna(fila["destino"]) else "Miami",
+                    peso_kg=float(fila["peso_kg"]),
+                    largo_cm=float(fila["largo_cm"]),
+                    ancho_cm=float(fila["ancho_cm"]),
+                    alto_cm=float(fila["alto_cm"]),
+                    ingreso_usd=float(fila["ingreso_usd"]),
+                    obligatorio=bool(fila["obligatorio"]) if pd.notna(fila["obligatorio"]) else False,
+                    apilable=bool(fila["apilable"]) if pd.notna(fila["apilable"]) else True,
+                    riesgo_alto=bool(fila["riesgo_alto"]) if pd.notna(fila["riesgo_alto"]) else False,
+                )
+            )
+        except (ValueError, TypeError):
+            filas_invalidas += 1
+
+    if filas_invalidas:
+        st.warning(f"{filas_invalidas} fila(s) con datos incompletos fueron ignoradas (falta peso, dimensiones o ingreso).")
+
+    st.metric("Ingreso potencial (si cupiera todo)", f"${sum(p.ingreso_usd for p in paquetes):,.0f}")
 
 with col_der:
     st.subheader(f"Avión: {avion.modelo}")
     st.write(
-        f"**Posiciones de pallet:** {len(avion.posiciones)}  \n"
+        f"**Posiciones de pallet:** {len(avion.posiciones)} "
+        f"({len({p.estacion for p in avion.posiciones})} estaciones"
+        f"{', izquierdo/derecho' if any(p.lado != 'centro' for p in avion.posiciones) else ''})  \n"
         f"**Payload máximo:** {avion.peso_max_carga_kg:,.0f} kg  \n"
-        f"**Volumen total:** {avion.volumen_total_m3:,.1f} m³  \n"
+        f"**Volumen total:** {avion.volumen_total_m3:,.1f} m³ (ya descuenta el contorno del fuselaje)  \n"
         f"**Rango CG admisible:** {avion.cg_min_m} – {avion.cg_max_m} m"
+    )
+    st.caption(
+        "Cada pallet tiene su contorno recortado hacia el fuselaje (menos altura útil junto "
+        "a la pared) y respeta que nada se apoye sobre carga no apilable o de alto riesgo (⚠)."
     )
 
 st.divider()
@@ -159,7 +230,10 @@ if "resultado" in st.session_state:
             st.dataframe(
                 pd.DataFrame(
                     [
-                        dict(id=c.paquete.id, producto=c.paquete.tipo_producto, peso_kg=c.paquete.peso_kg)
+                        dict(
+                            id=c.paquete.id, producto=c.paquete.tipo_producto, peso_kg=c.paquete.peso_kg,
+                            apilable=c.paquete.apilable, riesgo_alto=c.paquete.riesgo_alto,
+                        )
                         for c in empaque_sel.colocadas
                     ]
                 ),
@@ -178,6 +252,7 @@ if "resultado" in st.session_state:
                         dict(
                             id=p.id, producto=p.tipo_producto, cliente=p.cliente,
                             peso_kg=p.peso_kg, ingreso_usd=p.ingreso_usd,
+                            apilable=p.apilable, riesgo_alto=p.riesgo_alto,
                         )
                         for p in todos_no_embarcados
                     ]
