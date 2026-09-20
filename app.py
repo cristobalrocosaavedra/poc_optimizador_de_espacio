@@ -33,13 +33,15 @@ with st.expander("📐 Ver formulación matemática del modelo"):
     )
 
 with st.sidebar:
-    st.header("Parámetros")
-    modelo_avion = st.selectbox("Modelo de avión", ["B767F", "B737F"], index=0)
-    n_paquetes = st.slider("Cajas disponibles a simular", 100, 2500, 1100, step=50)
+    st.header("Stock de temporada")
+    n_paquetes = st.slider(
+        "Tamaño del stock a simular", 500, 8000, 3000, step=250,
+        help="El stock completo disponible para TODA la fila de aviones, no solo este — se va "
+        "agotando a medida que cada avión despacha su carga.",
+    )
     st.caption(
-        "Con pocas cajas entra todo (100%). Sobre ~1400-1500 el avión empieza a saturarse "
-        "y el optimizador debe elegir qué dejar en tierra. Catálogos grandes (>1800) tardan más "
-        "en el empaquetado 3D real — puede tomar 1-2 minutos."
+        "Catálogos grandes (>4000) hacen más lento el MILP (puede tomar 20-35s) — es el precio "
+        "de tener un stock realista compartido entre varios aviones."
     )
     seed = st.number_input("Semilla aleatoria", value=42, step=1)
     pct_obligatorio = st.slider("% de cajas con contrato obligatorio", 0, 40, 10) / 100.0
@@ -55,26 +57,31 @@ with st.sidebar:
         "Factor de seguridad de volumen por pallet", 0.5, 1.0, 0.85, step=0.05,
         help="Margen que deja la Etapa A para que el empaquetado 3D real siempre pueda acomodar la carga.",
     )
-    generar = st.button("🔄 Generar carga disponible", width='stretch')
+    generar = st.button(
+        "🔄 Generar stock nuevo (reinicia la fila)", width='stretch',
+        help="Regenera todo el stock desde cero y borra el historial de aviones ya despachados.",
+    )
 
     st.divider()
-    st.header("Objetivo de optimización")
+    n_avion_actual = st.session_state.get("num_avion", 1)
+    st.header(f"✈️ Avión #{n_avion_actual} (este)")
+    modelo_avion = st.selectbox("Modelo de avión", ["B767F", "B737F"], index=0)
     modo_optimizacion = st.radio(
         "¿Qué hace el modelo?",
-        ["Maximizar ingreso", "Cumplir un monto objetivo"],
+        ["Cumplir un monto objetivo", "Maximizar ingreso"],
         help=(
-            "Maximizar ingreso: el modelo elige la combinación de paquetes que deja la mayor "
-            "plata posible. Cumplir un monto objetivo: el ingreso ya viene decidido (p.ej. por "
-            "el área comercial) — el modelo selecciona paquetes hasta alcanzarlo y, con eso "
-            "garantizado, usa el espacio restante de la forma más eficiente posible."
+            "Cumplir un monto objetivo: el ingreso ya viene decidido para ESTE avión (el área "
+            "comercial ya lo optimizó) — el modelo toma del stock hasta alcanzarlo y, con eso "
+            "garantizado, usa el espacio restante de la forma más eficiente posible. Maximizar "
+            "ingreso: el modelo elige libremente la combinación que deja la mayor plata."
         ),
     )
     monto_objetivo = None
     if modo_optimizacion == "Cumplir un monto objetivo":
         monto_objetivo = st.number_input(
-            "Monto objetivo (USD)", min_value=0.0, value=20_000.0, step=1_000.0,
-            help="Meta mínima de ingreso a alcanzar. Si el catálogo/espacio no da para tanto, "
-            "se reporta cuánto falta.",
+            "Monto objetivo de este avión (USD)", min_value=0.0, value=20_000.0, step=1_000.0,
+            help="Meta mínima de ingreso a alcanzar con lo que quede en el stock. Si no da para "
+            "tanto, se reporta cuánto falta.",
         )
 
 if "df_paquetes" not in st.session_state or generar:
@@ -93,16 +100,23 @@ if "df_paquetes" not in st.session_state or generar:
             for p in base
         ]
     )
+    st.session_state["historial_despachos"] = []
+    st.session_state["num_avion"] = 1
     st.session_state.pop("resultado", None)
+
+if st.session_state.get("historial_despachos"):
+    with st.expander(f"📋 Historial de despacho ({len(st.session_state['historial_despachos'])} avión(es) ya cargados)", expanded=False):
+        st.dataframe(pd.DataFrame(st.session_state["historial_despachos"]), width='stretch')
 
 avion = crear_avion(modelo_avion)
 
 col_izq, col_der = st.columns([1, 1])
 with col_izq:
-    st.subheader("Catálogo de carga disponible")
+    st.subheader(f"Stock disponible (avión #{n_avion_actual} toma de aquí)")
     st.caption(
-        "Tabla editable: corrige valores, borra filas (selecciona + tecla Supr) o agrega "
-        "cajas nuevas con el ➕ al final de la tabla."
+        "Este es el stock que va quedando después de despachar los aviones anteriores — no se "
+        "regenera solo. Tabla editable: corrige valores, borra filas (selecciona + tecla Supr) o "
+        "agrega cajas nuevas con el ➕ al final de la tabla."
     )
     df_editado = st.data_editor(
         st.session_state["df_paquetes"],
@@ -156,10 +170,12 @@ with col_izq:
     if filas_invalidas:
         st.warning(f"{filas_invalidas} fila(s) con datos incompletos fueron ignoradas (falta peso, dimensiones o ingreso).")
 
-    st.metric("Ingreso potencial (si cupiera todo)", f"${sum(p.ingreso_usd for p in paquetes):,.0f}")
+    kstock1, kstock2 = st.columns(2)
+    kstock1.metric("Stock restante", f"{len(paquetes)} cajas")
+    kstock2.metric("Ingreso potencial del stock", f"${sum(p.ingreso_usd for p in paquetes):,.0f}")
 
 with col_der:
-    st.subheader(f"Avión: {avion.modelo}")
+    st.subheader(f"Avión #{n_avion_actual}: {avion.modelo}")
     st.write(
         f"**Posiciones de pallet:** {len(avion.posiciones)} "
         f"({len({p.estacion for p in avion.posiciones})} estaciones"
@@ -175,7 +191,7 @@ with col_der:
 
 st.divider()
 
-if st.button("🚀 Optimizar carga del avión", type="primary"):
+if st.button(f"🚀 Optimizar carga del avión #{n_avion_actual}", type="primary"):
     with st.spinner("Resolviendo modelo de asignación (MILP)..."):
         if modo_optimizacion == "Cumplir un monto objetivo":
             resultado = optimizar_con_meta(
@@ -250,6 +266,29 @@ if "resultado" in st.session_state:
             "ubicarse geométricamente en 3D y fueron descartadas (baja densidad de valor)."
         )
 
+    st.caption(
+        f"Esto es una previsualización del avión #{n_avion_actual} — el stock recién se descuenta "
+        "cuando confirmas el despacho."
+    )
+    if st.button(f"✅ Confirmar despacho del avión #{n_avion_actual} y pasar al siguiente", type="primary"):
+        ids_consumidos = {c.paquete.id for e in empaques for c in e.colocadas}
+        st.session_state["df_paquetes"] = (
+            df_editado[~df_editado["id"].isin(ids_consumidos)].reset_index(drop=True)
+        )
+        st.session_state.setdefault("historial_despachos", []).append(
+            dict(
+                avion=f"Avión #{n_avion_actual}", modelo=avion.modelo,
+                monto_objetivo=resultado.monto_objetivo_usd,
+                ingreso_logrado=round(resultado.ingreso_total, 0),
+                cajas=n_colocados_3d,
+                utilizacion_volumen_pct=round(100 * vol_total / avion.volumen_total_m3, 1),
+            )
+        )
+        st.session_state["num_avion"] = n_avion_actual + 1
+        st.session_state.pop("resultado", None)
+        st.session_state.pop("empaques", None)
+        st.rerun()
+
     tab_avion, tab_pallets, tab_no_asignados = st.tabs(
         ["🛫 Vista del avión completo", "📦 Detalle por pallet", "❌ No embarcados"]
     )
@@ -310,4 +349,4 @@ if "resultado" in st.session_state:
         else:
             st.success("¡Toda la carga disponible fue embarcada!")
 else:
-    st.info("Genera la carga disponible y presiona **Optimizar carga del avión** para ver resultados.")
+    st.info(f"Ajusta el monto objetivo del avión #{n_avion_actual} y presiona **Optimizar carga del avión** para ver resultados.")
