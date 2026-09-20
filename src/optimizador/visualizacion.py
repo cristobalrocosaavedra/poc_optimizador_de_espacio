@@ -1,11 +1,21 @@
-"""Visualización 3D (Plotly) de pallets y aviones cargados."""
+"""Visualización 3D (Plotly) de pallets y aviones cargados.
+
+Nota de rendimiento: con cientos o miles de cajas, crear una traza de Plotly
+por caja (y por arista de contorno) vuelve el gráfico casi imposible de
+rotar/zoomear en el navegador — WebGL empieza a sufrir mucho antes de llegar
+al límite de geometría, por la sola cantidad de objetos a coordinar. Por eso
+todas las cajas de un mismo color se funden en una única malla (`Mesh3d`)
+combinada, y todos los contornos en una única polilínea con cortes (`None`
+como separador) — el resultado visual es idéntico, pero son ~10-20 trazas en
+vez de miles.
+"""
 
 from __future__ import annotations
 
 import numpy as np
 import plotly.graph_objects as go
 
-from .empaquetado_3d import ResultadoEmpaque
+from .empaquetado_3d import CajaColocada, ResultadoEmpaque
 from .entidades import BandaAltura, Paquete
 
 PALETA_PRODUCTOS = {
@@ -16,6 +26,7 @@ PALETA_PRODUCTOS = {
     "Crisantemos": "#8fbf6b",
     "Gypsophila": "#c9c9d4",
 }
+COLOR_OTROS = "#999999"
 
 COLOR_FUSELAJE = "#aab4c2"
 COLOR_PISO = "#8d95a3"
@@ -25,64 +36,101 @@ COLOR_NO_APILABLE = "#e08a00"
 CAMARA_DEFECTO = dict(eye=dict(x=1.6, y=-1.7, z=0.9), up=dict(x=0, y=0, z=1))
 
 
-def _cubo_mesh(
-    x0: float, y0: float, z0: float, dx: float, dy: float, dz: float, color: str, texto: str
-) -> go.Mesh3d:
-    """Construye un cubo sólido (Mesh3d) ubicado en (x0,y0,z0) con dimensiones (dx,dy,dz)."""
-    xs = [x0, x0, x0 + dx, x0 + dx, x0, x0, x0 + dx, x0 + dx]
-    ys = [y0, y0 + dy, y0 + dy, y0, y0, y0 + dy, y0 + dy, y0]
-    zs = [z0, z0, z0, z0, z0 + dz, z0 + dz, z0 + dz, z0 + dz]
-    i = [0, 0, 0, 1, 1, 2, 4, 4, 4, 5, 5, 6]
-    j = [1, 2, 4, 2, 5, 6, 5, 6, 0, 6, 1, 7]
-    k = [2, 3, 5, 6, 6, 7, 6, 7, 1, 7, 2, 3]
-    return go.Mesh3d(
-        x=xs, y=ys, z=zs, i=i, j=j, k=k,
-        color=color, opacity=1.0, flatshading=True,
-        hovertext=texto, hoverinfo="text",
-        name=texto,
+def _texto_caja(caja: CajaColocada, pallet_id: str | None = None) -> str:
+    ubicacion = f"{caja.paquete.id} · pallet {pallet_id}" if pallet_id else caja.paquete.id
+    return (
+        f"{ubicacion}<br>{caja.paquete.tipo_producto} · {caja.paquete.cliente}"
+        f"<br>{caja.paquete.peso_kg} kg · ${caja.paquete.ingreso_usd:,.0f}"
+        f"<br>{'apilable' if caja.paquete.apilable else 'NO apilable'}"
+        f"{' · ⚠ alto riesgo' if caja.paquete.riesgo_alto else ''}"
     )
 
 
-def _contorno_caja(x0, y0, z0, dx, dy, dz, color="#333", width=3) -> list[go.Scatter3d]:
-    """Wireframe de una caja (pallet, banda de contorno, o avión) de referencia."""
-    v = [
-        (x0, y0, z0), (x0 + dx, y0, z0), (x0 + dx, y0 + dy, z0), (x0, y0 + dy, z0), (x0, y0, z0),
-        (x0, y0, z0 + dz), (x0 + dx, y0, z0 + dz), (x0 + dx, y0 + dy, z0 + dz), (x0, y0 + dy, z0 + dz),
-        (x0, y0, z0 + dz),
-    ]
-    aristas_verticales = [
-        [(x0 + dx, y0, z0), (x0 + dx, y0, z0 + dz)],
-        [(x0 + dx, y0 + dy, z0), (x0 + dx, y0 + dy, z0 + dz)],
-        [(x0, y0 + dy, z0), (x0, y0 + dy, z0 + dz)],
-    ]
-    xs, ys, zs = zip(*v)
-    trazos = [go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color=color, width=width), showlegend=False, hoverinfo="skip")]
-    for arista in aristas_verticales:
-        xa, ya, za = zip(*arista)
-        trazos.append(
-            go.Scatter3d(x=xa, y=ya, z=za, mode="lines", line=dict(color=color, width=width), showlegend=False, hoverinfo="skip")
-        )
-    return trazos
+def _cubos_batch(cajas: list[tuple[float, float, float, float, float, float, str]], color: str) -> go.Mesh3d:
+    """Combina N cubos `(x0,y0,z0,dx,dy,dz,hovertext)` en una única malla Mesh3d."""
+    xs: list[float] = []
+    ys: list[float] = []
+    zs: list[float] = []
+    i_idx: list[int] = []
+    j_idx: list[int] = []
+    k_idx: list[int] = []
+    hovertext: list[str] = []
 
+    for idx, (x0, y0, z0, dx, dy, dz, texto) in enumerate(cajas):
+        base = idx * 8
+        xs += [x0, x0, x0 + dx, x0 + dx, x0, x0, x0 + dx, x0 + dx]
+        ys += [y0, y0 + dy, y0 + dy, y0, y0, y0 + dy, y0 + dy, y0]
+        zs += [z0, z0, z0, z0, z0 + dz, z0 + dz, z0 + dz, z0 + dz]
+        i_idx += [base + v for v in (0, 0, 0, 1, 1, 2, 4, 4, 4, 5, 5, 6)]
+        j_idx += [base + v for v in (1, 2, 4, 2, 5, 6, 5, 6, 0, 6, 1, 7)]
+        k_idx += [base + v for v in (2, 3, 5, 6, 6, 7, 6, 7, 1, 7, 2, 3)]
+        hovertext += [texto] * 8
 
-def _contorno_pallet(x0: float, y0: float, bandas: list[BandaAltura], largo_cm: float, color="#555", width=2) -> list[go.Scatter3d]:
-    """Wireframe del pallet completo, banda por banda — dibuja el contorno real
-    (recortado hacia el fuselaje) en vez de una caja rectangular pareja."""
-    trazos = []
-    for banda in bandas:
-        trazos.extend(
-            _contorno_caja(x0, y0 + banda.offset_y_cm, 0, largo_cm, banda.ancho_cm, banda.alto_cm, color=color, width=width)
-        )
-    return trazos
-
-
-def _placa_pallet(x0: float, y0: float, largo: float, ancho: float, z: float = 0.0) -> go.Mesh3d:
-    """Base metálica del pallet (la plancha de aluminio real de un ULD/pallet aéreo)."""
-    xs = [x0, x0 + largo, x0 + largo, x0]
-    ys = [y0, y0, y0 + ancho, y0 + ancho]
-    zs = [z, z, z, z]
     return go.Mesh3d(
-        x=xs, y=ys, z=zs, i=[0, 0], j=[1, 2], k=[2, 3],
+        x=xs, y=ys, z=zs, i=i_idx, j=j_idx, k=k_idx,
+        color=color, opacity=1.0, flatshading=True,
+        hovertext=hovertext, hoverinfo="text",
+    )
+
+
+def _contornos_batch(cajas: list[tuple[float, float, float, float, float, float]], color="#555", width=2) -> go.Scatter3d:
+    """Combina el wireframe de N cajas (pallets, bandas de contorno) en una
+    única traza de líneas, usando `None` como separador entre segmentos."""
+    xs: list[float | None] = []
+    ys: list[float | None] = []
+    zs: list[float | None] = []
+
+    for x0, y0, z0, dx, dy, dz in cajas:
+        bucle = [
+            (x0, y0, z0), (x0 + dx, y0, z0), (x0 + dx, y0 + dy, z0), (x0, y0 + dy, z0), (x0, y0, z0),
+            (x0, y0, z0 + dz), (x0 + dx, y0, z0 + dz), (x0 + dx, y0 + dy, z0 + dz), (x0, y0 + dy, z0 + dz),
+            (x0, y0, z0 + dz),
+        ]
+        aristas_verticales = [
+            [(x0 + dx, y0, z0), (x0 + dx, y0, z0 + dz)],
+            [(x0 + dx, y0 + dy, z0), (x0 + dx, y0 + dy, z0 + dz)],
+            [(x0, y0 + dy, z0), (x0, y0 + dy, z0 + dz)],
+        ]
+        for segmento in [bucle, *aristas_verticales]:
+            for px, py, pz in segmento:
+                xs.append(px); ys.append(py); zs.append(pz)
+            xs.append(None); ys.append(None); zs.append(None)
+
+    return go.Scatter3d(
+        x=xs, y=ys, z=zs, mode="lines",
+        line=dict(color=color, width=width), showlegend=False, hoverinfo="skip",
+    )
+
+
+def _contorno_pallet_cajas(x0: float, y0: float, bandas: list[BandaAltura], largo_cm: float) -> list[tuple]:
+    """Las cajas (una por banda) que describen el contorno de un pallet, listas
+    para pasar a `_contornos_batch`."""
+    return [
+        (x0, y0 + banda.offset_y_cm, 0, largo_cm, banda.ancho_cm, banda.alto_cm)
+        for banda in bandas
+    ]
+
+
+def _placas_batch(rects: list[tuple[float, float, float, float]], z: float = 0.0) -> go.Mesh3d:
+    """Combina N bases de pallet `(x0,y0,largo,ancho)` en una única malla."""
+    xs: list[float] = []
+    ys: list[float] = []
+    zs: list[float] = []
+    i_idx: list[int] = []
+    j_idx: list[int] = []
+    k_idx: list[int] = []
+
+    for idx, (x0, y0, largo, ancho) in enumerate(rects):
+        base = idx * 4
+        xs += [x0, x0 + largo, x0 + largo, x0]
+        ys += [y0, y0, y0 + ancho, y0 + ancho]
+        zs += [z, z, z, z]
+        i_idx += [base, base]
+        j_idx += [base + 1, base + 2]
+        k_idx += [base + 2, base + 3]
+
+    return go.Mesh3d(
+        x=xs, y=ys, z=zs, i=i_idx, j=j_idx, k=k_idx,
         color=COLOR_PISO, opacity=0.75, flatshading=True,
         hoverinfo="skip", showlegend=False, name="Base pallet",
     )
@@ -91,9 +139,9 @@ def _placa_pallet(x0: float, y0: float, largo: float, ancho: float, z: float = 0
 def _marcadores_especiales(puntos: list[tuple[float, float, float, Paquete]]) -> list[go.Scatter3d]:
     """Marca carga de alto riesgo / no apilable con un símbolo flotante sobre la caja.
 
-    Se agrupan TODOS los puntos en, como máximo, dos trazas (una por categoría) en
-    vez de una traza por caja — con miles de cajas, una traza por caja vuelve el
-    gráfico lento de rotar/zoomear en el navegador.
+    Se agrupan TODOS los puntos en, como máximo, dos trazas (una por categoría),
+    igual que las demás funciones de este módulo — con miles de cajas, una
+    traza por caja vuelve el gráfico lento de rotar/zoomear en el navegador.
     """
     riesgo = [(x, y, z, p) for x, y, z, p in puntos if p.riesgo_alto]
     no_apilable = [(x, y, z, p) for x, y, z, p in puntos if not p.riesgo_alto and not p.apilable]
@@ -189,33 +237,37 @@ def _piso_carga(x_ini: float, x_fin: float, y_ini: float, y_fin: float) -> go.Me
     )
 
 
+def _leyenda_productos() -> list[go.Scatter3d]:
+    """Leyenda manual por tipo de producto (los Mesh3d no generan leyenda limpia)."""
+    return [
+        go.Scatter3d(
+            x=[None], y=[None], z=[None], mode="markers",
+            marker=dict(size=8, color=color), name=producto,
+        )
+        for producto, color in PALETA_PRODUCTOS.items()
+    ]
+
+
 def figura_posicion(resultado: ResultadoEmpaque) -> go.Figure:
     """Figura 3D de una sola posición de pallet con sus cajas colocadas."""
     pos = resultado.posicion
     fig = go.Figure()
-    fig.add_trace(_placa_pallet(0, 0, pos.largo_cm, pos.ancho_cm))
-    for trazo in _contorno_pallet(0, 0, pos.bandas, pos.largo_cm):
-        fig.add_trace(trazo)
+    fig.add_trace(_placas_batch([(0, 0, pos.largo_cm, pos.ancho_cm)]))
+    fig.add_trace(_contornos_batch(_contorno_pallet_cajas(0, 0, pos.bandas, pos.largo_cm)))
 
+    cajas_por_color: dict[str, list[tuple]] = {}
     puntos_especiales = []
     for caja in resultado.colocadas:
-        color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, "#999999")
-        texto = (
-            f"{caja.paquete.id}<br>{caja.paquete.tipo_producto} · {caja.paquete.cliente}"
-            f"<br>{caja.paquete.peso_kg} kg · ${caja.paquete.ingreso_usd:,.0f}"
-            f"<br>{'apilable' if caja.paquete.apilable else 'NO apilable'}"
-            f"{' · ⚠ alto riesgo' if caja.paquete.riesgo_alto else ''}"
-        )
-        fig.add_trace(
-            _cubo_mesh(
-                caja.x_cm, caja.y_cm, caja.z_cm,
-                caja.largo_cm, caja.ancho_cm, caja.alto_cm,
-                color, texto,
-            )
+        color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, COLOR_OTROS)
+        cajas_por_color.setdefault(color, []).append(
+            (caja.x_cm, caja.y_cm, caja.z_cm, caja.largo_cm, caja.ancho_cm, caja.alto_cm, _texto_caja(caja))
         )
         puntos_especiales.append(
             (caja.x_cm + caja.largo_cm / 2, caja.y_cm + caja.ancho_cm / 2, caja.z_cm + caja.alto_cm + 3, caja.paquete)
         )
+
+    for color, cajas in cajas_por_color.items():
+        fig.add_trace(_cubos_batch(cajas, color))
 
     for trazo in _marcadores_especiales(puntos_especiales):
         fig.add_trace(trazo)
@@ -251,6 +303,13 @@ def figura_avion(
     ancho_seccion = max(r.posicion.y_offset_cm + r.posicion.ancho_cm for r in resultados_por_posicion)
     alto_max = max(r.posicion.alto_max_cm for r in resultados_por_posicion)
 
+    cajas_contorno: list[tuple] = []
+    placas: list[tuple] = []
+    etiquetas_x: list[float] = []
+    etiquetas_y: list[float] = []
+    etiquetas_z: list[float] = []
+    etiquetas_texto: list[str] = []
+    cajas_por_color: dict[str, list[tuple]] = {}
     puntos_especiales: list[tuple[float, float, float, Paquete]] = []
     x_actual = 0.0
 
@@ -260,36 +319,37 @@ def figura_avion(
 
         for resultado in grupo:
             pos = resultado.posicion
-            fig.add_trace(_placa_pallet(x_actual, pos.y_offset_cm, pos.largo_cm, pos.ancho_cm))
-            for trazo in _contorno_pallet(x_actual, pos.y_offset_cm, pos.bandas, pos.largo_cm, color="#555", width=2):
-                fig.add_trace(trazo)
+            placas.append((x_actual, pos.y_offset_cm, pos.largo_cm, pos.ancho_cm))
+            cajas_contorno.extend(_contorno_pallet_cajas(x_actual, pos.y_offset_cm, pos.bandas, pos.largo_cm))
 
-            fig.add_trace(
-                go.Scatter3d(
-                    x=[x_actual + pos.largo_cm / 2], y=[pos.y_offset_cm + pos.ancho_cm / 2], z=[pos.alto_max_cm + 35],
-                    mode="text", text=[pos.id], textfont=dict(size=10, color="#333"),
-                    showlegend=False, hoverinfo="skip",
-                )
-            )
+            etiquetas_x.append(x_actual + pos.largo_cm / 2)
+            etiquetas_y.append(pos.y_offset_cm + pos.ancho_cm / 2)
+            etiquetas_z.append(pos.alto_max_cm + 35)
+            etiquetas_texto.append(pos.id)
 
             for caja in resultado.colocadas:
-                color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, "#999999")
-                texto = (
-                    f"{caja.paquete.id} · pallet {pos.id}<br>{caja.paquete.tipo_producto}"
-                    f"<br>{caja.paquete.peso_kg} kg · ${caja.paquete.ingreso_usd:,.0f}"
-                    f"<br>{'apilable' if caja.paquete.apilable else 'NO apilable'}"
-                    f"{' · ⚠ alto riesgo' if caja.paquete.riesgo_alto else ''}"
-                )
+                color = PALETA_PRODUCTOS.get(caja.paquete.tipo_producto, COLOR_OTROS)
                 x0 = x_actual + caja.x_cm
                 y0 = pos.y_offset_cm + caja.y_cm
-                fig.add_trace(
-                    _cubo_mesh(x0, y0, caja.z_cm, caja.largo_cm, caja.ancho_cm, caja.alto_cm, color, texto)
+                cajas_por_color.setdefault(color, []).append(
+                    (x0, y0, caja.z_cm, caja.largo_cm, caja.ancho_cm, caja.alto_cm, _texto_caja(caja, pos.id))
                 )
                 puntos_especiales.append(
                     (x0 + caja.largo_cm / 2, y0 + caja.ancho_cm / 2, caja.z_cm + caja.alto_cm + 3, caja.paquete)
                 )
 
         x_actual += largo_estacion + separacion_cm
+
+    fig.add_trace(_placas_batch(placas))
+    fig.add_trace(_contornos_batch(cajas_contorno, color="#555", width=2))
+    fig.add_trace(
+        go.Scatter3d(
+            x=etiquetas_x, y=etiquetas_y, z=etiquetas_z, mode="text", text=etiquetas_texto,
+            textfont=dict(size=10, color="#333"), showlegend=False, hoverinfo="skip",
+        )
+    )
+    for color, cajas in cajas_por_color.items():
+        fig.add_trace(_cubos_batch(cajas, color))
 
     largo_total = x_actual - separacion_cm
     margen_nariz = max(largo_total * 0.16, 350.0)
@@ -307,14 +367,8 @@ def figura_avion(
     for trazo in _marcadores_especiales(puntos_especiales):
         fig.add_trace(trazo)
 
-    # Leyenda manual por tipo de producto (los Mesh3d no generan leyenda limpia).
-    for producto, color in PALETA_PRODUCTOS.items():
-        fig.add_trace(
-            go.Scatter3d(
-                x=[None], y=[None], z=[None], mode="markers",
-                marker=dict(size=8, color=color), name=producto,
-            )
-        )
+    for trazo in _leyenda_productos():
+        fig.add_trace(trazo)
 
     fig.update_layout(
         scene=dict(

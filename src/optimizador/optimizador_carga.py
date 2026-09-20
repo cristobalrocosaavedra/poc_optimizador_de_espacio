@@ -199,6 +199,17 @@ def optimizar(
 #: la meta más de lo que la propia tolerancia del solver ya admite.
 TOLERANCIA_META_RELATIVA = 0.02
 
+#: Cuando el monto objetivo NO es alcanzable, el piso a exigir en la Fase 2 no
+#: puede ser "el máximo posible" a secas — eso cae en la misma zona dura que
+#: TOLERANCIA_META_RELATIVA evita, y aquí no hay ningún motivo para insistir en
+#: quedar pegado al techo (la meta ya se perdió de todas formas). Se le da un
+#: margen bastante más generoso para que la Fase 2 tenga espacio real donde
+#: encontrar mejores combinaciones de volumen/peso, sacrificando algo de
+#: ingreso a cambio — probado que el ingreso resultante apenas varía entre
+#: pedir el 100% o el 0% del máximo como piso, así que perder ese margen no
+#: cuesta casi nada de plata y sí gana bastante espacio utilizado.
+MARGEN_META_INALCANZABLE = 0.10
+
 
 def optimizar_con_meta(
     paquetes: list[Paquete],
@@ -226,16 +237,24 @@ def optimizar_con_meta(
     Si la meta ya está prácticamente en el techo de lo alcanzable, no hay
     margen real para reoptimizar por espacio sin sacrificar ingreso — y en
     ese caso la Fase 2 directamente se salta (la mejor combinación de espacio
-    ES la de ingreso máximo).
+    ES la de ingreso máximo). Si la meta NO es alcanzable, tampoco tiene
+    sentido pedirle al piso que se quede pegado al máximo (ver
+    `MARGEN_META_INALCANZABLE`): ya que la meta se perdió de todas formas, se
+    le da a la Fase 2 margen real para optimizar espacio en vez de forzarla a
+    buscar casi la única combinación que roza el ingreso máximo.
     """
     resultado_maximo = optimizar(paquetes, avion, factor_seguridad_volumen, tiempo_limite_s)
     ingreso_maximo_posible = resultado_maximo.ingreso_total
+    objetivo_alcanzable = monto_objetivo_usd <= ingreso_maximo_posible
     piso_ingreso = min(monto_objetivo_usd, ingreso_maximo_posible)
 
-    if piso_ingreso >= ingreso_maximo_posible * (1 - TOLERANCIA_META_RELATIVA):
+    if objetivo_alcanzable and piso_ingreso >= ingreso_maximo_posible * (1 - TOLERANCIA_META_RELATIVA):
         resultado_maximo.monto_objetivo_usd = monto_objetivo_usd
         resultado_maximo.ingreso_maximo_posible = ingreso_maximo_posible
         return resultado_maximo
+
+    margen = TOLERANCIA_META_RELATIVA if objetivo_alcanzable else MARGEN_META_INALCANZABLE
+    piso_con_margen = piso_ingreso * (1 - margen)
 
     problema = pulp.LpProblem("carga_avion_meta_espacio", pulp.LpMaximize)
     x = _variables_y_restricciones(problema, paquetes, avion, factor_seguridad_volumen)
@@ -244,7 +263,7 @@ def optimizar_con_meta(
         pulp.lpSum(
             paq.ingreso_usd * x[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
         )
-        >= piso_ingreso * (1 - TOLERANCIA_META_RELATIVA),
+        >= piso_con_margen,
         "piso_ingreso",
     )
 
