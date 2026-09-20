@@ -20,12 +20,31 @@ NP-duro. Por eso se separa en dos etapas:
 
 1. **Etapa A — Selección y asignación (MILP, `PuLP`/CBC):** decide qué
    paquetes viajan y en qué posición de pallet, usando peso y volumen como
-   recursos agregados, con margen de seguridad volumétrico y restricción de
+   recursos agregados (el volumen ya descuenta el contorno real del pallet,
+   ver más abajo), con margen de seguridad volumétrico y restricción de
    centro de gravedad linealizada.
 2. **Etapa B — Empaquetado geométrico 3D (`py3dbp`):** para los paquetes que
    la Etapa A asignó a cada pallet, calcula la posición `(x, y, z)` real de
-   cada caja. Si algo no entra geométricamente, descarta primero las cajas de
-   menor ingreso por m³ y reintenta.
+   cada caja, respetando que nada quede apoyado sobre carga no apilable o de
+   alto riesgo. Si algo no entra (geometría o apilamiento), queda reportado
+   como no colocado.
+
+### Contorno del pallet y carga no apilable
+
+Un pallet junto al fuselaje no es una caja recta: la altura de estiba se
+recorta hacia la pared curva del avión. Cada posición se modela con
+**bandas** transversales (borde bajo junto al fuselaje, banda alta hacia el
+pasillo/quilla central) en vez de un volumen rectangular parejo — esto
+afecta tanto el volumen disponible en la Etapa A como la forma real del
+empaquetado en la Etapa B. Los aviones anchos (`B767F`) se arman como pares
+de pallets **izquierdo/derecho** por estación a lo largo del fuselaje (el
+layout real de la mayoría de los aviones de carga), cada uno con el
+contorno recortado hacia su lado exterior.
+
+Cada paquete además puede marcarse **no apilable** (nada puede apoyarse
+encima) o de **alto riesgo** (frágil/sensible: siempre no apilable, y se
+marca aparte en el 3D). El empaquetado 3D respeta esto de verdad — no es
+solo una etiqueta informativa.
 
 ## Estructura del proyecto
 
@@ -51,11 +70,15 @@ streamlit run app.py
 
 Luego, en la app:
 
-1. Elige el modelo de avión (`B767F` widebody de 10 pallets, o `B737F`
-   narrowbody de 5 pallets) y cuántas cajas de flores simular.
-2. Click en **"Optimizar carga del avión"**.
-3. Explora la vista 3D del avión completo, el detalle por pallet y los
-   paquetes que no lograron embarcarse (y por qué).
+1. Elige el modelo de avión (`B767F` widebody, 12 pallets en 6 estaciones
+   izquierdo/derecho, o `B737F` narrowbody, 5 pallets en una fila) y cuántas
+   cajas de flores simular.
+2. Revisa o edita el catálogo generado en la tabla (agrega filas, corrige
+   valores, marca carga no apilable o de alto riesgo).
+3. Click en **"Optimizar carga del avión"**.
+4. Explora la vista 3D del avión completo (con fuselaje, contorno de pallet
+   y layout izquierdo/derecho), el detalle por pallet y los paquetes que no
+   lograron embarcarse (y por qué).
 
 Con catálogos grandes (>1000 cajas) el avión empieza a saturarse en volumen
 —no en peso, que es lo típico en carga de flores— y el optimizador debe
@@ -76,7 +99,10 @@ balance.
 
 - Multi-avión / multi-ruta: repartir un mismo catálogo de carga entre varios
   vuelos disponibles.
-- Restricciones de compatibilidad (carga refrigerada, no apilable, hazmat).
+- Balance lateral (izquierdo/derecho), no solo longitudinal — hoy el CG solo
+  considera el eje del fuselaje.
+- Restricciones de compatibilidad adicionales (carga refrigerada, hazmat,
+  incompatibilidad entre productos).
 - Reoptimización cuando llega carga de último minuto (*late tender*).
 - Reemplazar la heurística de empaquetado 3D por un solver exacto
   (CP-SAT / OR-Tools) para catálogos más chicos donde valga la pena.

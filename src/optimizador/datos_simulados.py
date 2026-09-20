@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import random
 
-from .entidades import Avion, Paquete, PosicionCarga
+from .entidades import Avion, BandaAltura, Paquete, PosicionCarga
 
 # Tipos de caja estándar de exportación de flores: (nombre, largo, ancho, alto en cm)
 TIPOS_CAJA = {
@@ -42,11 +42,16 @@ TARIFA_USD_KG = {
 # Densidad simulada (kg / m3) por tipo de caja para generar pesos realistas.
 DENSIDAD_KG_M3 = {"QB": 140.0, "HB": 130.0, "FB": 120.0}
 
+# Separación entre los pallets izquierdo/derecho de una misma estación (pasillo/quilla central).
+GAP_PASILLO_CM = 30.0
+
 
 def generar_catalogo_paquetes(
     n: int = 120,
     seed: int = 42,
     pct_obligatorio: float = 0.1,
+    pct_no_apilable: float = 0.15,
+    pct_riesgo_alto: float = 0.06,
 ) -> list[Paquete]:
     """Simula un catálogo de cajas de flores disponibles para un vuelo.
 
@@ -55,6 +60,9 @@ def generar_catalogo_paquetes(
     n: número de paquetes a generar.
     seed: semilla para reproducibilidad.
     pct_obligatorio: fracción de paquetes con embarque garantizado por contrato.
+    pct_no_apilable: fracción de cajas sobre las que no se puede apoyar otra caja.
+    pct_riesgo_alto: fracción de carga de alto riesgo/frágil (siempre no apilable,
+        y se prioriza dejarla en una posición accesible, no enterrada bajo otras).
     """
     rng = random.Random(seed)
     paquetes: list[Paquete] = []
@@ -77,6 +85,8 @@ def generar_catalogo_paquetes(
         ingreso_usd = round(peso_kg * tarifa * prima_destino, 2)
 
         obligatorio = rng.random() < pct_obligatorio
+        riesgo_alto = rng.random() < pct_riesgo_alto
+        apilable = (not riesgo_alto) and (rng.random() >= pct_no_apilable)
 
         paquetes.append(
             Paquete(
@@ -90,37 +100,89 @@ def generar_catalogo_paquetes(
                 alto_cm=alto,
                 ingreso_usd=ingreso_usd,
                 obligatorio=obligatorio,
+                apilable=apilable,
+                riesgo_alto=riesgo_alto,
             )
         )
 
     return paquetes
 
 
-def _pallet_estandar(id_: str, brazo_m: float, alto_cm: float = 160.0) -> PosicionCarga:
-    """Pallet aéreo estándar PMC/P1P (~223 x 317 cm de base)."""
-    return PosicionCarga(
-        id=id_,
-        peso_max_kg=4500.0,
-        largo_cm=317.0,
-        ancho_cm=223.0,
-        alto_max_cm=alto_cm,
-        brazo_m=brazo_m,
+def generar_bandas_contorno(ancho_cm: float, alto_max_cm: float, lado: str) -> list[BandaAltura]:
+    """Genera el perfil de altura (contorno) de un pallet según su ubicación.
+
+    El fuselaje del avión es curvo, así que la altura de estiba se recorta
+    hacia la pared exterior (junto al fuselaje) y se mantiene completa hacia
+    el pasillo/quilla central. `lado="centro"` genera un perfil simétrico
+    (recortado en ambos bordes), usado en posiciones de una sola fila.
+    """
+    factor_recorte = 0.55  # altura utilizable junto al fuselaje, como fracción del máximo
+
+    if lado == "centro":
+        ext = ancho_cm * 0.26
+        centro = ancho_cm - 2 * ext
+        return [
+            BandaAltura(ext, alto_max_cm * factor_recorte, 0.0),
+            BandaAltura(centro, alto_max_cm, ext),
+            BandaAltura(ext, alto_max_cm * factor_recorte, ext + centro),
+        ]
+
+    exterior = ancho_cm * 0.38
+    interior = ancho_cm - exterior
+    if lado == "izquierdo":
+        # El borde junto al fuselaje queda al inicio de la franja (offset 0).
+        return [
+            BandaAltura(exterior, alto_max_cm * factor_recorte, 0.0),
+            BandaAltura(interior, alto_max_cm, exterior),
+        ]
+    if lado == "derecho":
+        # El borde junto al fuselaje queda al final de la franja.
+        return [
+            BandaAltura(interior, alto_max_cm, 0.0),
+            BandaAltura(exterior, alto_max_cm * factor_recorte, interior),
+        ]
+    raise ValueError(f"lado no soportado: {lado}")
+
+
+def _estacion_par(
+    estacion: int, brazo_m: float, ancho_pallet: float, largo_cm: float,
+    alto_max_cm: float, peso_max_kg: float,
+) -> list[PosicionCarga]:
+    """Crea un par de pallets (izquierdo/derecho) para una misma estación longitudinal,
+    separados por el pasillo/quilla central — así es como se cargan de verdad la
+    mayoría de los aviones de carga anchos: no una sola fila, sino dos hileras."""
+    izquierdo = PosicionCarga(
+        id=f"PLT-{estacion}-IZQ", peso_max_kg=peso_max_kg, largo_cm=largo_cm,
+        ancho_cm=ancho_pallet, alto_max_cm=alto_max_cm, brazo_m=brazo_m,
+        estacion=estacion, lado="izquierdo", y_offset_cm=0.0,
+        bandas=generar_bandas_contorno(ancho_pallet, alto_max_cm, "izquierdo"),
     )
+    derecho = PosicionCarga(
+        id=f"PLT-{estacion}-DER", peso_max_kg=peso_max_kg, largo_cm=largo_cm,
+        ancho_cm=ancho_pallet, alto_max_cm=alto_max_cm, brazo_m=brazo_m,
+        estacion=estacion, lado="derecho", y_offset_cm=ancho_pallet + GAP_PASILLO_CM,
+        bandas=generar_bandas_contorno(ancho_pallet, alto_max_cm, "derecho"),
+    )
+    return [izquierdo, derecho]
 
 
 def crear_avion(modelo: str = "B767F") -> Avion:
     """Crea un avión de carga con posiciones de pallet predefinidas.
 
-    Modelos disponibles: "B767F" (widebody, 10 posiciones) y
-    "B737F" (narrowbody, 5 posiciones más pequeñas).
+    Modelos disponibles:
+    - "B767F" (widebody): 6 estaciones x 2 pallets (izquierdo/derecho) = 12 posiciones,
+      cada una con contorno recortado hacia el fuselaje.
+    - "B737F" (narrowbody): 5 posiciones en una sola fila central, con contorno
+      simétrico recortado en ambos bordes.
     """
     if modelo == "B767F":
-        # Posiciones a lo largo del fuselaje, brazo creciente desde la nariz.
-        brazos = [4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 26.5]
-        posiciones = [
-            _pallet_estandar(f"PLT-{i + 1}", brazo, alto_cm=160.0 if i not in (0, 9) else 120.0)
-            for i, brazo in enumerate(brazos)
-        ]
+        brazos = [4.5, 8.5, 12.5, 16.5, 20.5, 24.5]
+        posiciones: list[PosicionCarga] = []
+        for i, brazo in enumerate(brazos, start=1):
+            alto = 120.0 if i in (1, len(brazos)) else 160.0  # nariz/cola más bajas
+            posiciones.extend(
+                _estacion_par(i, brazo, ancho_pallet=150.0, largo_cm=300.0, alto_max_cm=alto, peso_max_kg=2600.0)
+            )
         return Avion(
             id="AC-767F-01",
             modelo="Boeing 767-300F",
@@ -140,6 +202,10 @@ def crear_avion(modelo: str = "B767F") -> Avion:
                 ancho_cm=153.0,
                 alto_max_cm=140.0,
                 brazo_m=brazo,
+                estacion=i + 1,
+                lado="centro",
+                y_offset_cm=0.0,
+                bandas=generar_bandas_contorno(153.0, 140.0, "centro"),
             )
             for i, brazo in enumerate(brazos)
         ]
