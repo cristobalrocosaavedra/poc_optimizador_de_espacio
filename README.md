@@ -88,8 +88,12 @@ Luego, en la app:
    stock en la tabla (agrega filas, corrige valores, marca carga no
    apilable o de alto riesgo).
 2. Para el avión actual (#1, #2, ...): elige su modelo, y su monto objetivo
-   si vas a usar el modo "Cumplir un monto objetivo" (el modo por defecto —
-   ese monto ya viene dado, no lo optimiza el modelo).
+   si vas a usar el modo "Cumplir un monto objetivo" (el modo por defecto). El
+   modelo **no optimiza ese número en dólares** — ya viene decidido por el
+   área comercial y se ingresa tal cual. Lo que el modelo sí optimiza es
+   **qué paquetes elegir** del stock para alcanzarlo, y una vez alcanzado,
+   cómo usar el volumen/peso restante del avión de la forma más eficiente
+   posible.
 3. Click en **"Optimizar carga del avión"** y revisa el resultado: vista 3D
    completa (fuselaje, contorno de pallet, layout izquierdo/derecho),
    detalle por pallet, y qué quedó fuera.
