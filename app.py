@@ -34,7 +34,12 @@ with st.expander("📐 Ver formulación matemática del modelo"):
 with st.sidebar:
     st.header("Parámetros")
     modelo_avion = st.selectbox("Modelo de avión", ["B767F", "B737F"], index=0)
-    n_paquetes = st.slider("Cajas disponibles a simular", 100, 2500, 1800, step=50)
+    n_paquetes = st.slider("Cajas disponibles a simular", 100, 2500, 1100, step=50)
+    st.caption(
+        "Con pocas cajas entra todo (100%). Sobre ~1400-1500 el avión empieza a saturarse "
+        "y el optimizador debe elegir qué dejar en tierra. Catálogos grandes (>1800) tardan más "
+        "en el empaquetado 3D real — puede tomar 1-2 minutos."
+    )
     seed = st.number_input("Semilla aleatoria", value=42, step=1)
     pct_obligatorio = st.slider("% de cajas con contrato obligatorio", 0, 40, 10) / 100.0
     factor_seguridad = st.slider(
@@ -82,10 +87,18 @@ st.divider()
 if st.button("🚀 Optimizar carga del avión", type="primary"):
     with st.spinner("Resolviendo modelo de asignación (MILP)..."):
         resultado = optimizar(paquetes, avion, factor_seguridad_volumen=factor_seguridad)
-    with st.spinner("Empaquetando en 3D dentro de cada pallet..."):
-        empaques = [
-            empaquetar_posicion(pos, resultado.asignacion[pos.id]) for pos in avion.posiciones
-        ]
+
+    barra = st.progress(0.0, text="Empaquetando en 3D...")
+    empaques = []
+    for idx, pos in enumerate(avion.posiciones):
+        n_asignados = len(resultado.asignacion[pos.id])
+        barra.progress(
+            idx / len(avion.posiciones),
+            text=f"Empaquetando pallet {pos.id} ({idx + 1}/{len(avion.posiciones)}) — {n_asignados} cajas asignadas...",
+        )
+        empaques.append(empaquetar_posicion(pos, resultado.asignacion[pos.id]))
+    barra.progress(1.0, text="Empaquetado 3D completo.")
+    barra.empty()
     st.session_state["resultado"] = resultado
     st.session_state["empaques"] = empaques
 
