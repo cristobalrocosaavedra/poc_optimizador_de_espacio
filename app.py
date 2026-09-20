@@ -28,7 +28,7 @@ st.caption(
 
 with st.expander("📐 Ver formulación matemática del modelo"):
     st.markdown(
-        (Path(__file__).parent / "docs" / "formulacion_matematica.md").read_text()
+        (Path(__file__).parent / "docs" / "formulacion_matematica.md").read_text(encoding="utf-8")
     )
 
 with st.sidebar:
