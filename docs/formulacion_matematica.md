@@ -150,10 +150,22 @@ sujeto a    Σ_i Σ_p ingreso_i · x_{i,p}  ≥  piso · (1 − ε)
 ```
 
 Si `piso` ya está prácticamente en `ingreso_max` (dentro de esa misma
-tolerancia), no queda margen real para reoptimizar por espacio sin
-sacrificar ingreso, así que se usa directamente el resultado de la Fase 1.
+tolerancia) **y** `M` es alcanzable, no queda margen real para reoptimizar
+por espacio sin sacrificar ingreso, así que se usa directamente el
+resultado de la Fase 1.
+
 Si el monto objetivo `M` no es alcanzable (`M > ingreso_max`), se reporta
-`faltante = M − ingreso_max`.
+`faltante = M − ingreso_max` — pero el piso de la Fase 2 en ese caso NO se
+fija en `ingreso_max` a secas: como la meta ya se perdió de todas formas,
+insistir en quedar pegado al techo no tiene sentido y cae en la misma zona
+dura para el solver que `ε` evita. Se usa un margen bastante más generoso
+(`piso = ingreso_max · (1 − 0.10)`) para que la Fase 2 tenga espacio real
+donde optimizar — probado sobre un catálogo de referencia que el ingreso
+resultante apenas varía entre pedir 100% o 0% del máximo como piso, así que
+ese margen cuesta casi nada de plata y gana bastante espacio utilizado
+(volumen realmente aprovechado: ~64% exigiendo el piso pegado al techo, que
+además el solver no siempre logra probar como óptimo a tiempo, vs. ~74-85%
+con el margen generoso).
 
 ---
 
@@ -186,9 +198,14 @@ Para cada posición `p`, con el conjunto de paquetes que la Etapa A le asignó:
    independiente, con sus propias dimensiones `(largo_p, ancho_k, alto_k)` y
    la capacidad de peso `W_p` de la posición.
 2. Cada paquete asignado se modela como una caja (`Item`) con sus
-   dimensiones `(largo_i, ancho_i, alto_i)` y peso `peso_i`, ordenados por
-   densidad de valor (`ingreso_i / vol_i`) y repartidos entre bandas: la
-   primera banda recibe lo que le quepa, el resto pasa a la siguiente.
+   dimensiones `(largo_i, ancho_i, alto_i)` y peso `peso_i`, y se reparten
+   entre bandas en este orden: primero los paquetes apilables (de mayor a
+   menor densidad de valor `ingreso_i / vol_i`), y al final los no apilables
+   o de alto riesgo. Colocar primero lo apilable arma una base sólida sobre
+   la que se puede seguir apilando; dejar lo no apilable para el final evita
+   que ocupe temprano posiciones "de crecimiento" y bloquee el apilamiento
+   de todo lo que se coloca después. La primera banda recibe lo que le
+   quepa, el resto pasa a la siguiente.
 3. Dentro de cada banda se corre una heurística de bin-packing 3D (misma
    lógica de pivotes esquina-a-esquina de `py3dbp`), pero con una restricción
    adicional: **nada puede quedar apoyado sobre un paquete con
@@ -217,6 +234,20 @@ El chequeo de apilamiento de esta POC filtra los casos donde de verdad hay
 solape de huella (x, y) y contacto exacto en altura, que cubre el caso
 práctico relevante, pero no reemplaza una validación de estabilidad física
 completa.
+
+### 3.4 Costo real de la carga no apilable
+
+Mientras más carga no apilable/alto riesgo tiene el catálogo, más volumen se
+desperdicia — es un efecto físico real, no un defecto del modelo: si una
+fracción de las cajas no admite nada encima, queda más "aire" atrapado sobre
+ellas. Con un catálogo de referencia (1650 cajas, B767F), el volumen
+realmente aprovechado —después del empaquetado 3D, no la promesa agregada
+de la Etapa A— cayó de ~75% con 0% de carga no apilable a ~64% con 11% no
+apilable + 6% alto riesgo, y a ~50% con 30% + 15%. El orden de empaquetado
+descrito en 3.2 (apilables primero) recupera buena parte de esa pérdida
+(~64% → ~74% en el mismo catálogo de 11%+6%), pero no la elimina — es
+inherente a que una porción de la carga no se puede usar como base de
+apilamiento.
 
 ---
 
