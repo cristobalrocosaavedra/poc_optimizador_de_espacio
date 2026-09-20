@@ -46,6 +46,19 @@ encima) o de **alto riesgo** (frágil/sensible: siempre no apilable, y se
 marca aparte en el 3D). El empaquetado 3D respeta esto de verdad — no es
 solo una etiqueta informativa.
 
+### Modo "cumplir monto objetivo" y stock compartido en fila
+
+El ingreso no siempre es algo que el modelo deba maximizar: en la operación
+real, el área comercial ya decide cuánto debe facturar cada avión, y la
+tarea es seleccionar carga hasta alcanzar ese monto y, con eso garantizado,
+aprovechar el espacio lo mejor posible (ver sección 2.1 de la formulación).
+
+Además, ese monto es *por avión*, y los aviones despachan **en fila desde un
+mismo stock compartido** (el stock de temporada, no un catálogo por vuelo):
+el avión #1 toma lo que necesita para cumplir su meta, lo que sobra queda
+disponible para el avión #2, y así sucesivamente. La app modela esto
+directamente — ver "Cómo correr el POC" más abajo.
+
 ## Estructura del proyecto
 
 ```
@@ -70,15 +83,22 @@ streamlit run app.py
 
 Luego, en la app:
 
-1. Elige el modelo de avión (`B767F` widebody, 12 pallets en 6 estaciones
-   izquierdo/derecho, o `B737F` narrowbody, 5 pallets en una fila) y cuántas
-   cajas de flores simular.
-2. Revisa o edita el catálogo generado en la tabla (agrega filas, corrige
-   valores, marca carga no apilable o de alto riesgo).
-3. Click en **"Optimizar carga del avión"**.
-4. Explora la vista 3D del avión completo (con fuselaje, contorno de pallet
-   y layout izquierdo/derecho), el detalle por pallet y los paquetes que no
-   lograron embarcarse (y por qué).
+1. Genera el **stock de temporada** (el tamaño simula todo lo disponible
+   para la fila completa de aviones, no solo el primero). Revisa o edita el
+   stock en la tabla (agrega filas, corrige valores, marca carga no
+   apilable o de alto riesgo).
+2. Para el avión actual (#1, #2, ...): elige su modelo, y su monto objetivo
+   si vas a usar el modo "Cumplir un monto objetivo" (el modo por defecto —
+   ese monto ya viene dado, no lo optimiza el modelo).
+3. Click en **"Optimizar carga del avión"** y revisa el resultado: vista 3D
+   completa (fuselaje, contorno de pallet, layout izquierdo/derecho),
+   detalle por pallet, y qué quedó fuera.
+4. Click en **"Confirmar despacho y pasar al siguiente"**: descuenta del
+   stock lo que ese avión realmente cargó, guarda el resultado en el
+   historial de despacho, y pasa al avión siguiente — que toma lo que
+   sobró.
+5. Repite para cada avión de la fila. El botón "Generar stock nuevo"
+   reinicia todo (stock + historial) si quieres empezar de cero.
 
 Con catálogos grandes (>1000 cajas) el avión empieza a saturarse en volumen
 —no en peso, que es lo típico en carga de flores— y el optimizador debe
@@ -97,8 +117,11 @@ balance.
 
 ## Próximos pasos posibles
 
-- Multi-avión / multi-ruta: repartir un mismo catálogo de carga entre varios
-  vuelos disponibles.
+- La fila de aviones hoy es **secuencial y greedy**: cada avión toma lo
+  mejor para sí mismo del stock que quedó, sin mirar a los aviones
+  siguientes. Optimizar la fila completa a la vez (qué avión debería llevarse
+  qué, viendo toda la fila de una) daría mejores resultados globales, pero
+  es un problema bastante más grande.
 - Balance lateral (izquierdo/derecho), no solo longitudinal — hoy el CG solo
   considera el eje del fuselaje.
 - Restricciones de compatibilidad adicionales (carga refrigerada, hazmat,
