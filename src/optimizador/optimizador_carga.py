@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import pulp
 
-from .entidades import Avion, Paquete
+from .entidades import Avion, Paquete, PosicionCarga
 
 
 @dataclass
@@ -125,25 +125,63 @@ def _resolver(problema: pulp.LpProblem, tiempo_limite_s: int) -> str:
     return pulp.LpStatus[problema.status]
 
 
+def _reparar_capacidad_posicion(
+    asignados: list[Paquete], pos: PosicionCarga, factor_seguridad_volumen: float
+) -> list[Paquete]:
+    """Garantiza que lo asignado a una posición respete su peso/volumen real.
+
+    Normalmente esto ya lo asegura el MILP (restricciones (2)-(3)), pero
+    cuando CBC no llega a confirmar ninguna solución entera factible dentro
+    del tiempo límite (típico con catálogos grandes, miles de variables
+    binarias), PuLP igual devuelve valores de la última relajación LP que
+    tocó — fraccionarios (p.ej. 0.48, 0.52) — y el umbral ">0.5" usado para
+    extraer la asignación los redondea sin que eso siga respetando la
+    restricción original. Sin este reparo, `empaquetado_3d` recibiría una
+    posición con más peso/volumen "asignado" del que físicamente cabe.
+
+    Se descartan primero los paquetes no obligatorios de menor densidad de
+    valor (ingreso/m³); los obligatorios solo se tocan como último recurso,
+    para preservar la semántica de "obligatorio" del MILP en la medida de
+    lo posible incluso cuando el solver no terminó de resolver.
+    """
+    restantes = sorted(asignados, key=lambda p: (p.obligatorio, p.densidad_valor))
+    vol_max = factor_seguridad_volumen * pos.volumen_max_m3
+    while restantes and (
+        sum(p.peso_kg for p in restantes) > pos.peso_max_kg + 1e-6
+        or sum(p.volumen_m3 for p in restantes) > vol_max + 1e-6
+    ):
+        restantes.pop(0)
+    return restantes
+
+
 def _extraer_resultado(
     estado: str,
     x: dict[tuple[str, str], pulp.LpVariable],
     paquetes: list[Paquete],
     avion: Avion,
+    factor_seguridad_volumen: float,
     monto_objetivo_usd: float | None = None,
     ingreso_maximo_posible: float | None = None,
 ) -> ResultadoOptimizacion:
     posiciones = avion.posiciones
     asignacion: dict[str, list[Paquete]] = {pos.id: [] for pos in posiciones}
-    ids_asignados: set[str] = set()
     for paq in paquetes:
         for pos in posiciones:
             var = x[(paq.id, pos.id)]
             if var.value() is not None and var.value() > 0.5:
                 asignacion[pos.id].append(paq)
-                ids_asignados.add(paq.id)
                 break
 
+    # Ver docstring de _reparar_capacidad_posicion: necesario cuando el
+    # solver no confirmó una solución entera factible (estado != "Optimal").
+    # Barato cuando sí la confirmó — el bucle interno no encuentra nada que
+    # reparar y no hace nada.
+    asignacion = {
+        pos.id: _reparar_capacidad_posicion(asignacion[pos.id], pos, factor_seguridad_volumen)
+        for pos in posiciones
+    }
+
+    ids_asignados = {p.id for lst in asignacion.values() for p in lst}
     no_asignados = [p for p in paquetes if p.id not in ids_asignados]
     ingreso_total = sum(p.ingreso_usd for lst in asignacion.values() for p in lst)
 
@@ -188,7 +226,7 @@ def optimizar(
     )
 
     estado = _resolver(problema, tiempo_limite_s)
-    return _extraer_resultado(estado, x, paquetes, avion)
+    return _extraer_resultado(estado, x, paquetes, avion, factor_seguridad_volumen)
 
 
 #: Tolerancia relativa sobre el piso de ingreso exigido en la Fase 2. Sin ella,
@@ -290,7 +328,7 @@ def optimizar_con_meta(
         return resultado_maximo
 
     return _extraer_resultado(
-        estado, x, paquetes, avion,
+        estado, x, paquetes, avion, factor_seguridad_volumen,
         monto_objetivo_usd=monto_objetivo_usd,
         ingreso_maximo_posible=ingreso_maximo_posible,
     )
