@@ -77,6 +77,17 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   importar el estado del solver. Si tocas la extracción del resultado, no
   quites ese reparo pensando que "el MILP ya lo garantiza": no lo garantiza
   cuando el solver no terminó.
+- **El tope de peso por posición manda antes que el payload del avión**: en
+  el B767F cada una de las 12 posiciones tiene `peso_max_kg=2600` — sumado,
+  eso es 31.200 kg, bastante menos que el `peso_max_carga_kg=52.000` del
+  avión. Con carga densa (probado forzando 65-95 kg/caja en
+  `scripts/probar_escenarios.py`, escenario "carga muy densa"), el peso se
+  topa en ~31.200 kg, no en 52.000 — el `peso_max_carga_kg` del avión casi
+  nunca se alcanza en la práctica porque los topes individuales de pallet
+  llegan primero. Mismo patrón que el de volumen (ver el punto de "el MILP
+  asigna por posición" más abajo), aplicado a peso. No es un bug, pero si
+  agregas diagnóstico de peso en `app.py` como el que ya existe para
+  volumen, recuerda esto.
 - **Comparativa de solvers ya hecha**: antes de asumir que hay que cambiar
   de CBC, usa `.claude/skills/comparar-solvers/` — ya se armó y validó (las
   5 formulaciones coinciden en el óptimo de un catálogo chico) un

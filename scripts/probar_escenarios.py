@@ -70,9 +70,14 @@ ESCENARIOS = [
 # Peso por caja para los escenarios "denso": muy por sobre el rango real de
 # flores (~2-15 kg por caja) para que el payload del avión (52.000 kg en el
 # B767F, 10.000 kg en el B737F) se agote mucho antes que el volumen — el
-# generador de flores reales nunca produce esto por sí solo.
-PESO_DENSO_KG_MIN = 15.0
-PESO_DENSO_KG_MAX = 25.0
+# generador de flores reales nunca produce esto por sí solo. Un primer
+# intento con 15-25 kg NO alcanzó a forzar esto (~920 cajas caben por
+# volumen en el B767F, y a 20 kg promedio eso es solo ~18.400 kg, muy por
+# debajo del payload — el volumen seguía ganando). Con ~920 cajas cabiendo
+# por volumen, hace falta más de 52.000/920 ≈ 56.5 kg/caja para que el peso
+# gane la carrera — 65-95 kg da margen de sobra.
+PESO_DENSO_KG_MIN = 65.0
+PESO_DENSO_KG_MAX = 95.0
 
 
 def _densificar(paquetes: list, seed: int) -> list:
