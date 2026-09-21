@@ -123,24 +123,54 @@ Los paquetes se simulan como cajas estándar de exportación de flores (QB /
 HB / FB), con variedades (rosas, claveles, hortensias, alstroemerias,
 crisantemos, gypsophila), clientes, destinos y una tarifa USD/kg por
 variedad que aproxima precios de temporada alta (p.ej. San Valentín). Los
-aviones se modelan con posiciones de pallet estándar (PMC ~223×317 cm),
-capacidad de peso por posición, y un brazo de momento para el cálculo de
-balance.
+aviones se modelan con posiciones de pallet por estación, capacidad de peso
+por posición, y un brazo de momento para el cálculo de balance — **4
+modelos de carguero dedicado** disponibles hoy (`B737F`, `B767F`, `MD11F`,
+`B777F`, de menor a mayor capacidad), todos con números aproximados
+(inspirados en especificaciones públicas típicas, no datos operativos
+reales) al mismo nivel de aproximación. Cada avión de la fila también puede
+tener una **disponibilidad de capacidad reducida** (manual o sorteada
+dentro de un rango): ningún avión vuela realmente con el 100% de su
+capacidad estructural libre para carga (derates de combustible/peso), y es
+la misma mecánica que más adelante modelará el caso de un avión de
+pasajeros con carga compartida (ver hoja de ruta abajo).
 
-## Próximos pasos posibles
+## Hoja de ruta
 
-- La fila de aviones hoy es **secuencial y greedy**: cada avión toma lo
-  mejor para sí mismo del stock que quedó, sin mirar a los aviones
-  siguientes. Optimizar la fila completa a la vez (qué avión debería llevarse
-  qué, viendo toda la fila de una) daría mejores resultados globales, pero
-  es un problema bastante más grande.
-- Balance lateral (izquierdo/derecho), no solo longitudinal — hoy el CG solo
-  considera el eje del fuselaje.
+**Ya hecho** (este POC, en este orden): selección + empaquetado 3D con
+contorno real de fuselaje y apilamiento correcto; monto objetivo como piso
+y techo (no maximiza ingreso libremente); stock compartido en fila entre
+aviones con reparto proporcional de carga obligatoria; panel de diagnóstico
+de por qué no se alcanza una meta; 4 tipos de avión carguero;
+disponibilidad de capacidad variable por vuelo.
+
+**Siguiente etapa — más variabilidad y tipos de operación**:
+- **Aviones de pasajeros con carga compartida (belly cargo)**: mucha carga
+  de flores real viaja en el compartimento inferior de vuelos de pasajeros,
+  no solo en cargueros dedicados. A diferencia de un carguero, ahí la
+  capacidad para carga es un **resto variable** (depende de cuánto equipaje
+  lleve ESE vuelo en particular, no es un número fijo conocido de
+  antemano) y usa contenedores tipo LD3/LD6 en vez de pallets — geometría y
+  lógica de capacidad distintas a lo que se modela hoy. La disponibilidad
+  variable ya implementada es la base para esto (mismo mecanismo, con un
+  rango más agresivo y quizás ligado a un "% de ocupación de pasajeros"
+  simulado en vez de un sorteo genérico).
 - Restricciones de compatibilidad adicionales (carga refrigerada, hazmat,
   incompatibilidad entre productos).
+
+**Etapas futuras**:
+- Optimizar la fila completa de aviones a la vez (qué avión debería llevarse
+  qué, viendo toda la fila de una), en vez de secuencial y greedy como hoy
+  — mejores resultados globales, pero un problema bastante más grande.
+- Balance lateral (izquierdo/derecho), no solo longitudinal — hoy el CG solo
+  considera el eje del fuselaje.
 - Reoptimización cuando llega carga de último minuto (*late tender*).
 - Reemplazar la heurística de empaquetado 3D por un solver exacto
-  (CP-SAT / OR-Tools) para catálogos más chicos donde valga la pena.
+  (CP-SAT / OR-Tools) para catálogos más chicos donde valga la pena — ver
+  `.claude/skills/comparar-solvers/` para la comparativa ya hecha de
+  solvers para la Etapa A (selección), que es un punto de partida para esto.
+- Reemplazar los datos simulados (tarifas, densidades, specs de avión) por
+  datos reales de operación.
 
 Ver la sección 5 de [`docs/formulacion_matematica.md`](docs/formulacion_matematica.md)
-para más detalle.
+para más detalle técnico de lo ya implementado.

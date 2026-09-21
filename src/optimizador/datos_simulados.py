@@ -169,11 +169,20 @@ def _estacion_par(
 def crear_avion(modelo: str = "B767F") -> Avion:
     """Crea un avión de carga con posiciones de pallet predefinidas.
 
+    Los números son **simulados y aproximados** (inspirados en especificaciones
+    públicas típicas de cada modelo, no en datos operativos reales) — mismo
+    nivel de aproximación para los 4 modelos, a afinar con data real más
+    adelante.
+
     Modelos disponibles:
-    - "B767F" (widebody): 6 estaciones x 2 pallets (izquierdo/derecho) = 12 posiciones,
-      cada una con contorno recortado hacia el fuselaje.
-    - "B737F" (narrowbody): 5 posiciones en una sola fila central, con contorno
-      simétrico recortado en ambos bordes.
+    - "B767F" (widebody mediano): 6 estaciones x 2 pallets (izquierdo/derecho)
+      = 12 posiciones, cada una con contorno recortado hacia el fuselaje.
+    - "B737F" (narrowbody, el más chico): 5 posiciones en una sola fila
+      central, con contorno simétrico recortado en ambos bordes.
+    - "B777F" (widebody grande): 8 estaciones x 2 = 16 posiciones, más
+      payload y volumen por posición que el 767F.
+    - "MD11F" (trijet widebody, clásico en rutas de flores): 7 estaciones x 2
+      = 14 posiciones, entre el 767F y el 777F en capacidad.
     """
     if modelo == "B767F":
         brazos = [4.5, 8.5, 12.5, 16.5, 20.5, 24.5]
@@ -216,6 +225,40 @@ def crear_avion(modelo: str = "B767F") -> Avion:
             peso_max_carga_kg=10_000.0,
             cg_min_m=7.0,
             cg_max_m=10.0,
+        )
+
+    if modelo == "B777F":
+        brazos = [4.5, 8.5, 12.5, 16.5, 20.5, 24.5, 28.5, 32.5]
+        posiciones = []
+        for i, brazo in enumerate(brazos, start=1):
+            alto = 130.0 if i in (1, len(brazos)) else 170.0  # nariz/cola más bajas
+            posiciones.extend(
+                _estacion_par(i, brazo, ancho_pallet=155.0, largo_cm=320.0, alto_max_cm=alto, peso_max_kg=3200.0)
+            )
+        return Avion(
+            id="AC-777F-01",
+            modelo="Boeing 777F",
+            posiciones=posiciones,
+            peso_max_carga_kg=100_000.0,
+            cg_min_m=15.0,
+            cg_max_m=23.0,
+        )
+
+    if modelo == "MD11F":
+        brazos = [4.0, 7.5, 11.0, 14.5, 18.0, 21.5, 25.0]
+        posiciones = []
+        for i, brazo in enumerate(brazos, start=1):
+            alto = 120.0 if i in (1, len(brazos)) else 160.0  # nariz/cola más bajas
+            posiciones.extend(
+                _estacion_par(i, brazo, ancho_pallet=150.0, largo_cm=300.0, alto_max_cm=alto, peso_max_kg=2800.0)
+            )
+        return Avion(
+            id="AC-MD11F-01",
+            modelo="McDonnell Douglas MD-11F",
+            posiciones=posiciones,
+            peso_max_carga_kg=65_000.0,
+            cg_min_m=13.0,
+            cg_max_m=19.0,
         )
 
     raise ValueError(f"Modelo de avión no soportado: {modelo}")

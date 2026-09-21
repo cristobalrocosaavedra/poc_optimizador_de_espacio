@@ -165,6 +165,25 @@ Por eso el slider de stock en `app.py` tiene tope 8000 con aviso — no lo
 subas sin volver a medir, CBC con `gapRel=0.02` y `timeLimit` puede degradar
 mal en catálogos más grandes.
 
+## Specs simuladas por tipo de avión (referencia)
+
+Todas aproximadas (ver docstring de `crear_avion()`), medidas con
+`n=3000, seed=42, pct_obligatorio=0.10`:
+
+| Modelo | Volumen total | Payload avión | Suma topes pallet | Posiciones | Ingreso techo real (sin meta) |
+|---|---|---|---|---|---|
+| B737F | 18.4 m³ | 10.000 kg | 11.000 kg | 5 | ~$6.800 |
+| B767F | 65.7 m³ | 52.000 kg | 31.200 kg | 12 | ~$27.000-27.700 |
+| MD11F | 77.6 m³ | 65.000 kg | 39.200 kg | 14 | ~$25.500 |
+| B777F | 105.3 m³ | 100.000 kg | 51.200 kg | 16 | ~$32.800-35.700 |
+
+El "ingreso techo real" es una propiedad emergente (capacidad × tarifas
+simuladas de `TARIFA_USD_KG`/`DENSIDAD_KG_M3`), no un número puesto a mano
+— si cambias las tarifas o densidades en `datos_simulados.py`, estos techos
+se mueven todos. En todos los modelos, la **suma de los topes de pallet
+individuales manda antes que el payload del avión** (mismo patrón ya
+documentado arriba para B767F) — es de esperar, no un bug nuevo por avión.
+
 ## Decisiones de producto ya tomadas (no las reabras sin que el usuario lo pida)
 
 - El monto objetivo por avión **no lo optimiza el modelo** — es un dato
@@ -188,6 +207,16 @@ mal en catálogos más grandes.
 - Balance lateral, hazmat, reoptimización por late-tender, solver exacto de
   bin-packing: todo en "Próximos pasos posibles" del README, ninguno pedido
   aún. Mismo criterio: no los implementes de forma proactiva.
+- **4 tipos de avión carguero** (`B737F`, `B767F`, `MD11F`, `B777F`, de
+  menor a mayor capacidad) y **disponibilidad de capacidad variable**
+  (`factor_disponibilidad`, manual o sorteada dentro de un rango) ya están
+  implementados — pedido explícito del usuario, sienta la base para
+  "aviones de pasajeros con belly cargo" (etapa futura, NO implementada:
+  ahí la capacidad es un resto variable dependiente del equipaje, y usa
+  contenedores LD3/LD6 en vez de pallets — geometría distinta a lo que hay
+  hoy). No implementes belly cargo sin que lo pidan explícitamente; sí
+  puedes extender `factor_disponibilidad` (ej. rangos más agresivos) si lo
+  piden.
 
 ## Convención de ramas/PRs de este repo
 

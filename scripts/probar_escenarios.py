@@ -84,6 +84,14 @@ ESCENARIOS = [
     dict(nombre="obligatorio excede la capacidad del avión (20%, dentro del rango de la UI)", modelo="B767F", n=8000, seed=42,
          monto=25_000, pct_obl=0.20, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85,
          estados_ok=("Optimal", "Not Solved", "Infeasible")),
+    dict(nombre="B777F (nuevo, widebody grande)", modelo="B777F", n=3000, seed=42,
+         monto=35_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85),
+    dict(nombre="MD11F (nuevo, trijet clásico de flores)", modelo="MD11F", n=3000, seed=42,
+         monto=25_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85),
+    dict(nombre="disponibilidad reducida (70%, simula fuel derate o belly cargo)", modelo="B767F", n=3000, seed=42,
+         monto=15_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85, factor_disp=0.70),
+    dict(nombre="disponibilidad muy baja (50%) + meta alta (probablemente inalcanzable)", modelo="B767F", n=3000, seed=42,
+         monto=25_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85, factor_disp=0.50),
 ]
 
 # Peso por caja para los escenarios "denso": muy por sobre el rango real de
@@ -128,7 +136,10 @@ def _contar_violaciones_apilado(empaques) -> int:
     return violaciones
 
 
-def _validar_capacidades(resultado, avion, factor_seguridad: float, paquetes: list | None = None) -> list[str]:
+def _validar_capacidades(
+    resultado, avion, factor_seguridad: float, paquetes: list | None = None,
+    factor_disponibilidad: float = 1.0,
+) -> list[str]:
     """Chequeo de sanidad de la Etapa A: nada debería exceder peso/volumen
     por posición, payload del avión, o el rango de CG. Si esto falla, el MILP
     o su extracción de resultado tiene un bug real."""
@@ -137,13 +148,16 @@ def _validar_capacidades(resultado, avion, factor_seguridad: float, paquetes: li
         asignados = resultado.asignacion[pos.id]
         peso = sum(p.peso_kg for p in asignados)
         vol = sum(p.volumen_m3 for p in asignados)
-        if peso > pos.peso_max_kg + 1e-6:
-            problemas.append(f"{pos.id}: peso {peso:.1f} > máx {pos.peso_max_kg}")
-        if vol > factor_seguridad * pos.volumen_max_m3 + 1e-6:
-            problemas.append(f"{pos.id}: volumen {vol:.2f} > máx {factor_seguridad * pos.volumen_max_m3:.2f}")
+        peso_max_pos = factor_disponibilidad * pos.peso_max_kg
+        vol_max_pos = factor_disponibilidad * factor_seguridad * pos.volumen_max_m3
+        if peso > peso_max_pos + 1e-6:
+            problemas.append(f"{pos.id}: peso {peso:.1f} > máx {peso_max_pos:.1f}")
+        if vol > vol_max_pos + 1e-6:
+            problemas.append(f"{pos.id}: volumen {vol:.2f} > máx {vol_max_pos:.2f}")
     peso_total = sum(p.peso_kg for lst in resultado.asignacion.values() for p in lst)
-    if peso_total > avion.peso_max_carga_kg + 1e-6:
-        problemas.append(f"payload total {peso_total:.0f} > máx {avion.peso_max_carga_kg}")
+    peso_max_avion = factor_disponibilidad * avion.peso_max_carga_kg
+    if peso_total > peso_max_avion + 1e-6:
+        problemas.append(f"payload total {peso_total:.0f} > máx {peso_max_avion:.0f}")
     if resultado.brazo_resultante_m is not None and not (
         avion.cg_min_m - 1e-6 <= resultado.brazo_resultante_m <= avion.cg_max_m + 1e-6
     ):
@@ -217,14 +231,19 @@ def correr(escenario: dict) -> dict:
         paquetes = _densificar(paquetes, escenario["seed"])
     avion = crear_avion(escenario["modelo"])
 
+    factor_disp = escenario.get("factor_disp", 1.0)
+
     t0 = time.time()
     if escenario["monto"] is not None:
         resultado = optimizar_con_meta(
             paquetes, avion, monto_objetivo_usd=escenario["monto"],
-            factor_seguridad_volumen=escenario["factor_seg"],
+            factor_seguridad_volumen=escenario["factor_seg"], factor_disponibilidad=factor_disp,
         )
     else:
-        resultado = optimizar(paquetes, avion, factor_seguridad_volumen=escenario["factor_seg"])
+        resultado = optimizar(
+            paquetes, avion, factor_seguridad_volumen=escenario["factor_seg"],
+            factor_disponibilidad=factor_disp,
+        )
     t_milp = time.time() - t0
 
     empaques = [empaquetar_posicion(pos, resultado.asignacion[pos.id]) for pos in avion.posiciones]
@@ -236,7 +255,7 @@ def correr(escenario: dict) -> dict:
     n_colocados = sum(len(e.colocadas) for e in empaques)
     n_no_colocados_3d = sum(len(e.no_colocadas) for e in empaques)
 
-    problemas = _validar_capacidades(resultado, avion, escenario["factor_seg"], paquetes)
+    problemas = _validar_capacidades(resultado, avion, escenario["factor_seg"], paquetes, factor_disp)
     violaciones = _contar_violaciones_apilado(empaques)
 
     return dict(

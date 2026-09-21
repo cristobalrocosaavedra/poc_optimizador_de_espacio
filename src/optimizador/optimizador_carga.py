@@ -107,10 +107,19 @@ def _variables_y_restricciones(
     paquetes: list[Paquete],
     avion: Avion,
     factor_seguridad_volumen: float,
+    factor_disponibilidad: float = 1.0,
 ) -> dict[tuple[str, str], pulp.LpVariable]:
     """Agrega a `problema` las variables y restricciones (1)-(6) del modelo
     (ver docs/formulacion_matematica.md) — todo lo que NO es la función
     objetivo, que cada modo de optimización define por su cuenta.
+
+    `factor_disponibilidad` (0-1) representa cuánta de la capacidad NOMINAL
+    del avión está realmente libre para esta carga en este vuelo particular
+    — un avión rara vez vuela con el 100% de su capacidad estructural
+    disponible para carga (derates de combustible/peso, y más adelante:
+    aviones de pasajeros donde la carga comparte espacio con el equipaje).
+    Descuenta tanto peso como volumen por igual; el rango de CG no cambia
+    (es sobre balance, no sobre cuánta capacidad hay).
     """
     posiciones = avion.posiciones
     x = {
@@ -130,12 +139,13 @@ def _variables_y_restricciones(
     # (2) y (3) Capacidad de peso y volumen por posición.
     for pos in posiciones:
         problema += (
-            pulp.lpSum(paq.peso_kg * x[(paq.id, pos.id)] for paq in paquetes) <= pos.peso_max_kg,
+            pulp.lpSum(paq.peso_kg * x[(paq.id, pos.id)] for paq in paquetes)
+            <= factor_disponibilidad * pos.peso_max_kg,
             f"peso_max_{pos.id}",
         )
         problema += (
             pulp.lpSum(paq.volumen_m3 * x[(paq.id, pos.id)] for paq in paquetes)
-            <= factor_seguridad_volumen * pos.volumen_max_m3,
+            <= factor_disponibilidad * factor_seguridad_volumen * pos.volumen_max_m3,
             f"volumen_max_{pos.id}",
         )
 
@@ -144,7 +154,7 @@ def _variables_y_restricciones(
         pulp.lpSum(
             paq.peso_kg * x[(paq.id, pos.id)] for paq in paquetes for pos in posiciones
         )
-        <= avion.peso_max_carga_kg,
+        <= factor_disponibilidad * avion.peso_max_carga_kg,
         "payload_max_avion",
     )
 
@@ -179,7 +189,8 @@ def _resolver(problema: pulp.LpProblem, tiempo_limite_s: int) -> str:
 
 
 def _reparar_capacidad_posicion(
-    asignados: list[Paquete], pos: PosicionCarga, factor_seguridad_volumen: float
+    asignados: list[Paquete], pos: PosicionCarga, factor_seguridad_volumen: float,
+    factor_disponibilidad: float = 1.0,
 ) -> list[Paquete]:
     """Garantiza que lo asignado a una posición respete su peso/volumen real.
 
@@ -198,9 +209,10 @@ def _reparar_capacidad_posicion(
     lo posible incluso cuando el solver no terminó de resolver.
     """
     restantes = sorted(asignados, key=lambda p: (p.obligatorio, p.densidad_valor))
-    vol_max = factor_seguridad_volumen * pos.volumen_max_m3
+    peso_max = factor_disponibilidad * pos.peso_max_kg
+    vol_max = factor_disponibilidad * factor_seguridad_volumen * pos.volumen_max_m3
     while restantes and (
-        sum(p.peso_kg for p in restantes) > pos.peso_max_kg + 1e-6
+        sum(p.peso_kg for p in restantes) > peso_max + 1e-6
         or sum(p.volumen_m3 for p in restantes) > vol_max + 1e-6
     ):
         restantes.pop(0)
@@ -213,6 +225,7 @@ def _extraer_resultado(
     paquetes: list[Paquete],
     avion: Avion,
     factor_seguridad_volumen: float,
+    factor_disponibilidad: float = 1.0,
     monto_objetivo_usd: float | None = None,
     ingreso_maximo_posible: float | None = None,
 ) -> ResultadoOptimizacion:
@@ -230,7 +243,9 @@ def _extraer_resultado(
     # Barato cuando sí la confirmó — el bucle interno no encuentra nada que
     # reparar y no hace nada.
     asignacion = {
-        pos.id: _reparar_capacidad_posicion(asignacion[pos.id], pos, factor_seguridad_volumen)
+        pos.id: _reparar_capacidad_posicion(
+            asignacion[pos.id], pos, factor_seguridad_volumen, factor_disponibilidad
+        )
         for pos in posiciones
     }
 
@@ -261,25 +276,30 @@ def optimizar(
     avion: Avion,
     factor_seguridad_volumen: float = 0.85,
     tiempo_limite_s: int = 30,
+    factor_disponibilidad: float = 1.0,
 ) -> ResultadoOptimizacion:
     """Resuelve el MILP de selección + asignación a pallet para un avión.
 
     Maximiza el ingreso total sujeto a:
       - cada paquete se asigna a lo más a una posición,
-      - capacidad de peso y volumen (con margen de seguridad) por posición,
+      - capacidad de peso y volumen (con margen de seguridad, y descontada
+        por `factor_disponibilidad` si este vuelo no tiene el 100% de la
+        capacidad nominal libre para carga) por posición,
       - payload máximo del avión,
       - balance / centro de gravedad dentro del rango admisible,
       - paquetes obligatorios deben ir sí o sí.
     """
     problema = pulp.LpProblem("carga_avion_max_ingreso", pulp.LpMaximize)
-    x = _variables_y_restricciones(problema, paquetes, avion, factor_seguridad_volumen)
+    x = _variables_y_restricciones(
+        problema, paquetes, avion, factor_seguridad_volumen, factor_disponibilidad
+    )
 
     problema += pulp.lpSum(
         paq.ingreso_usd * x[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
     )
 
     estado = _resolver(problema, tiempo_limite_s)
-    return _extraer_resultado(estado, x, paquetes, avion, factor_seguridad_volumen)
+    return _extraer_resultado(estado, x, paquetes, avion, factor_seguridad_volumen, factor_disponibilidad)
 
 
 #: Tolerancia relativa sobre el piso de ingreso exigido en la Fase 2. Sin ella,
@@ -322,6 +342,7 @@ def optimizar_con_meta(
     monto_objetivo_usd: float,
     factor_seguridad_volumen: float = 0.85,
     tiempo_limite_s: int = 30,
+    factor_disponibilidad: float = 1.0,
 ) -> ResultadoOptimizacion:
     """Selecciona paquetes para acercarse a un monto de ingreso ya decidido
     externamente sin pasarse por mucho (no se maximiza el ingreso — la meta
@@ -356,7 +377,9 @@ def optimizar_con_meta(
     techo_meta = monto_objetivo_usd * (1 + MARGEN_SUPERIOR_META)
 
     problema1 = pulp.LpProblem("carga_avion_meta_techo", pulp.LpMaximize)
-    x1 = _variables_y_restricciones(problema1, paquetes, avion, factor_seguridad_volumen)
+    x1 = _variables_y_restricciones(
+        problema1, paquetes, avion, factor_seguridad_volumen, factor_disponibilidad
+    )
     ingreso_expr1 = pulp.lpSum(
         paq.ingreso_usd * x1[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
     )
@@ -374,12 +397,16 @@ def optimizar_con_meta(
         # restricción de techo, que sí es factible (asumiendo que el problema
         # sin meta lo es) — el techo queda sin respetar en este caso de
         # borde, mejor eso que un resultado con el balance del avión roto.
-        resultado_sin_techo = optimizar(paquetes, avion, factor_seguridad_volumen, tiempo_limite_s)
+        resultado_sin_techo = optimizar(
+            paquetes, avion, factor_seguridad_volumen, tiempo_limite_s, factor_disponibilidad
+        )
         resultado_sin_techo.monto_objetivo_usd = monto_objetivo_usd
         resultado_sin_techo.ingreso_maximo_posible = resultado_sin_techo.ingreso_total
         return resultado_sin_techo
 
-    resultado1 = _extraer_resultado(estado1, x1, paquetes, avion, factor_seguridad_volumen)
+    resultado1 = _extraer_resultado(
+        estado1, x1, paquetes, avion, factor_seguridad_volumen, factor_disponibilidad
+    )
     ingreso_techo = resultado1.ingreso_total
     objetivo_alcanzable = ingreso_techo >= monto_objetivo_usd * (1 - TOLERANCIA_META_RELATIVA)
 
@@ -392,7 +419,9 @@ def optimizar_con_meta(
     piso_ingreso = ingreso_techo * (1 - margen)
 
     problema2 = pulp.LpProblem("carga_avion_meta_espacio", pulp.LpMaximize)
-    x2 = _variables_y_restricciones(problema2, paquetes, avion, factor_seguridad_volumen)
+    x2 = _variables_y_restricciones(
+        problema2, paquetes, avion, factor_seguridad_volumen, factor_disponibilidad
+    )
     ingreso_expr2 = pulp.lpSum(
         paq.ingreso_usd * x2[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
     )
@@ -422,7 +451,7 @@ def optimizar_con_meta(
         return resultado1
 
     return _extraer_resultado(
-        estado2, x2, paquetes, avion, factor_seguridad_volumen,
+        estado2, x2, paquetes, avion, factor_seguridad_volumen, factor_disponibilidad,
         monto_objetivo_usd=monto_objetivo_usd,
         ingreso_maximo_posible=ingreso_techo,
     )
