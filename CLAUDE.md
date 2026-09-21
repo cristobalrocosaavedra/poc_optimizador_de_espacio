@@ -213,6 +213,25 @@ documentado arriba para B767F) — es de esperar, no un bug nuevo por avión.
 - Balance lateral, hazmat, reoptimización por late-tender, solver exacto de
   bin-packing: todo en "Próximos pasos posibles" del README, ninguno pedido
   aún. Mismo criterio: no los implementes de forma proactiva.
+- **El monto objetivo por defecto en la UI se sugiere dinámicamente, no es
+  un flat $20.000** — pedido explícito del usuario ("en la mayoría de los
+  casos te darán un monto fijo, de algo similar al espacio disponible, por
+  lo que casi siempre ocupamos al máximo los espacios"). `app.py` calcula
+  `_monto_objetivo_sugerido()`: techo de peso efectivo = mínimo entre
+  `peso_max_carga_kg`, la suma de topes de peso por pallet, y el peso
+  equivalente del volumen disponible a una densidad promedio de caja de
+  flores (mismo patrón ya documentado arriba de "el tope por posición/el
+  volumen mandan antes que el payload") — todo escalado por
+  `factor_disponibilidad` y `factor_seguridad_volumen` actuales — × una
+  tarifa USD/kg promedio (de `TARIFA_USD_KG`, con la prima promedio de
+  destino/cliente). Es una aproximación a propósito (el MILP real prioriza
+  ítems de mayor ingreso/kg, así que el techo real suele quedar ~5-15% por
+  encima de esto — validado contra la tabla de "Specs simuladas" de abajo)
+  — es un punto de partida editable, no pretende ser exacto. Se re-sugiere
+  cada vez que cambian modelo de avión, disponibilidad o factor de
+  seguridad (vía una `key` de `session_state` con un tuple de esos tres
+  valores) — si el usuario ya editó el campo a mano, un rerun de un widget
+  *no relacionado* (ej. mover otro slider) no le pisa el valor editado.
 - **4 tipos de avión carguero** (`B737F`, `B767F`, `MD11F`, `B777F`, de
   menor a mayor capacidad) y **disponibilidad de capacidad variable**
   (`factor_disponibilidad`, manual o sorteada dentro de un rango) ya están

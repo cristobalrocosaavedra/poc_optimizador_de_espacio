@@ -93,11 +93,15 @@ Luego, en la app:
 2. Para el avión actual (#1, #2, ...): elige su modelo, y su monto objetivo
    si vas a usar el modo "Cumplir un monto objetivo" (el modo por defecto). El
    modelo **no optimiza ese número en dólares** — ya viene decidido por el
-   área comercial y se ingresa tal cual. Lo que el modelo sí optimiza es
-   **qué paquetes elegir** del stock para acercarse a ese monto sin pasarse
-   por mucho (no es un piso libre — no carga de más solo por llenar
-   espacio), y entre las combinaciones que logran eso, cómo usar el
-   volumen/peso disponible del avión de la forma más eficiente posible.
+   área comercial y se ingresa tal cual. La app sugiere un monto de partida
+   cercano al techo real de capacidad de ese avión con su disponibilidad
+   actual (en la práctica, casi siempre se pide facturar cerca del máximo
+   del espacio disponible) — es editable, ajústalo si el área comercial te
+   dio otro número. Lo que el modelo sí optimiza es **qué paquetes elegir**
+   del stock para acercarse a ese monto sin pasarse por mucho (no es un piso
+   libre — no carga de más solo por llenar espacio), y entre las
+   combinaciones que logran eso, cómo usar el volumen/peso disponible del
+   avión de la forma más eficiente posible.
 3. Click en **"Optimizar carga del avión"** y revisa el resultado: vista 3D
    completa (fuselaje, contorno de pallet, layout izquierdo/derecho),
    detalle por pallet, y qué quedó fuera. Si no se alcanza la meta, el panel

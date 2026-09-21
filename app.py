@@ -14,7 +14,12 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 import pandas as pd
 import streamlit as st
 
-from optimizador.datos_simulados import generar_catalogo_paquetes, crear_avion
+from optimizador.datos_simulados import (
+    DENSIDAD_KG_M3,
+    TARIFA_USD_KG,
+    crear_avion,
+    generar_catalogo_paquetes,
+)
 from optimizador.empaquetado_3d import empaquetar_posicion
 from optimizador.entidades import Paquete
 from optimizador.optimizador_carga import (
@@ -24,6 +29,34 @@ from optimizador.optimizador_carga import (
     repartir_obligatorio_en_fila,
 )
 from optimizador.visualizacion import figura_avion, figura_posicion
+
+_DENSIDAD_PROMEDIO_KG_M3 = sum(DENSIDAD_KG_M3.values()) / len(DENSIDAD_KG_M3)
+_TARIFA_PROMEDIO_USD_KG = (
+    sum((tarifa_min + tarifa_max) / 2 for tarifa_min, tarifa_max in TARIFA_USD_KG.values())
+    / len(TARIFA_USD_KG)
+    * 1.05  # prima promedio por destino/cliente (rng.uniform(0.95, 1.15) en datos_simulados.py)
+)
+
+
+def _monto_objetivo_sugerido(avion, factor_seguridad_volumen: float, factor_disponibilidad: float) -> float:
+    """Estima el ingreso techo real de este avión con su disponibilidad actual.
+
+    Usa el mismo patrón ya documentado en CLAUDE.md ("el tope de peso por
+    posición manda antes que el payload del avión", "el avión se satura en
+    volumen, no en peso"): el techo de carga es el mínimo entre el payload
+    total, la suma de los topes de peso por pallet, y el peso equivalente
+    del volumen disponible a una densidad típica de caja de flores. Es una
+    aproximación (el MILP real prioriza ítems de mayor ingreso/kg, así que
+    el techo real suele quedar algo por encima de esto) — sirve como punto
+    de partida editable, no como el número exacto que dará el optimizador.
+    """
+    peso_max_pallets = sum(p.peso_max_kg for p in avion.posiciones)
+    peso_max_por_volumen = avion.volumen_total_m3 * factor_seguridad_volumen * _DENSIDAD_PROMEDIO_KG_M3
+    peso_max_efectivo = factor_disponibilidad * min(
+        avion.peso_max_carga_kg, peso_max_pallets, peso_max_por_volumen
+    )
+    return round(peso_max_efectivo * _TARIFA_PROMEDIO_USD_KG / 500.0) * 500.0
+
 
 st.set_page_config(page_title="Optimizador de carga aérea", layout="wide")
 
@@ -78,6 +111,7 @@ with st.sidebar:
     n_avion_actual = st.session_state.get("num_avion", 1)
     st.header(f"✈️ Avión #{n_avion_actual} (este)")
     modelo_avion = st.selectbox("Modelo de avión", ["B767F", "B737F", "B777F", "MD11F"], index=0)
+    avion = crear_avion(modelo_avion)
 
     disponibilidad_variable = st.checkbox(
         "Disponibilidad variable por vuelo",
@@ -120,10 +154,19 @@ with st.sidebar:
     )
     monto_objetivo = None
     if modo_optimizacion == "Cumplir un monto objetivo":
+        sugerido = _monto_objetivo_sugerido(avion, factor_seguridad, factor_disponibilidad)
+        clave_sugerido = (modelo_avion, round(factor_disponibilidad, 3), factor_seguridad)
+        if st.session_state.get("_clave_monto_sugerido") != clave_sugerido:
+            st.session_state["monto_objetivo_input"] = sugerido
+            st.session_state["_clave_monto_sugerido"] = clave_sugerido
         monto_objetivo = st.number_input(
-            "Monto objetivo de este avión (USD)", min_value=0.0, value=20_000.0, step=1_000.0,
+            "Monto objetivo de este avión (USD)", min_value=0.0, step=1_000.0,
+            key="monto_objetivo_input",
             help="Ingreso a alcanzar con lo que quede en el stock — el modelo no se pasa de esto "
-            "por mucho (margen chico, ~2%). Si el stock no da para tanto, se reporta cuánto falta.",
+            "por mucho (margen chico, ~2%). Se sugiere automáticamente cerca del techo de "
+            f"capacidad de este avión con su disponibilidad actual (≈${sugerido:,.0f}) — "
+            "edítalo si el área comercial te dio otro número. Si el stock no da para tanto, se "
+            "reporta cuánto falta.",
         )
 
 if "df_paquetes" not in st.session_state or generar:
@@ -149,8 +192,6 @@ if "df_paquetes" not in st.session_state or generar:
 if st.session_state.get("historial_despachos"):
     with st.expander(f"📋 Historial de despacho ({len(st.session_state['historial_despachos'])} avión(es) ya cargados)", expanded=False):
         st.dataframe(pd.DataFrame(st.session_state["historial_despachos"]), width='stretch')
-
-avion = crear_avion(modelo_avion)
 
 col_izq, col_der = st.columns([1, 1])
 with col_izq:
