@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from optimizador.datos_simulados import crear_avion, generar_catalogo_paquetes  # noqa: E402
 from optimizador.empaquetado_3d import empaquetar_posicion  # noqa: E402
 from optimizador.optimizador_carga import (  # noqa: E402
+    MARGEN_SUPERIOR_META,
     optimizar,
     optimizar_con_meta,
     repartir_obligatorio_en_fila,
@@ -147,6 +148,13 @@ def _validar_capacidades(resultado, avion, factor_seguridad: float) -> list[str]
         avion.cg_min_m - 1e-6 <= resultado.brazo_resultante_m <= avion.cg_max_m + 1e-6
     ):
         problemas.append(f"CG {resultado.brazo_resultante_m:.2f} fuera de [{avion.cg_min_m}, {avion.cg_max_m}]")
+    if resultado.monto_objetivo_usd is not None and resultado.monto_objetivo_usd > 0:
+        techo = resultado.monto_objetivo_usd * (1 + MARGEN_SUPERIOR_META)
+        if resultado.ingreso_total > techo + 1.0:
+            problemas.append(
+                f"ingreso {resultado.ingreso_total:.0f} excede el techo de la meta "
+                f"{techo:.0f} (meta {resultado.monto_objetivo_usd:.0f} + margen)"
+            )
     return problemas
 
 
