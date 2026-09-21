@@ -58,6 +58,7 @@ una POC. Por eso el enfoque se separa en **dos etapas**:
 | `PesoMax_avión` | Payload máximo de carga del avión (kg) |
 | `cg_min`, `cg_max` | Límites del centro de gravedad admisible, expresados como brazo promedio (m) |
 | `f_seg` | Factor de seguridad volumétrico (< 1) para dejar margen al empaquetado 3D real |
+| `f_disp` | Disponibilidad real de capacidad de este vuelo (≤ 1) — cuánto de la capacidad nominal (peso y volumen) está realmente libre para carga |
 
 ### Variables de decisión
 
@@ -80,12 +81,12 @@ maximizar   Σ_i Σ_p  ingreso_i · x_{i,p}
 
 **(2) Capacidad de peso por posición:**
 ```
-Σ_i peso_i · x_{i,p}  ≤  W_p     ∀ p
+Σ_i peso_i · x_{i,p}  ≤  f_disp · W_p     ∀ p
 ```
 
 **(3) Capacidad de volumen por posición (con margen de seguridad):**
 ```
-Σ_i vol_i · x_{i,p}  ≤  f_seg · V_p     ∀ p
+Σ_i vol_i · x_{i,p}  ≤  f_disp · f_seg · V_p     ∀ p
 ```
 
 `V_p` ya no es un simple `largo × ancho × alto`: cada posición tiene un
@@ -97,8 +98,15 @@ pasillo/quilla central.
 
 **(4) Payload máximo total del avión:**
 ```
-Σ_p Σ_i peso_i · x_{i,p}  ≤  PesoMax_avión
+Σ_p Σ_i peso_i · x_{i,p}  ≤  f_disp · PesoMax_avión
 ```
+
+`f_disp` (por defecto 1, capacidad nominal completa) representa que un
+avión rara vez vuela con el 100% de su capacidad estructural libre para
+carga — derates de combustible/peso, y (etapa futura) espacio compartido
+con equipaje en un avión de pasajeros. Se aplica por igual a peso y volumen,
+y no afecta el rango de CG (`cg_min`/`cg_max`): eso es sobre balance, no
+sobre cuánta capacidad total hay disponible.
 
 **(5) Balance / centro de gravedad — linealizado:**
 
@@ -286,8 +294,25 @@ apilamiento.
 
 ## 5. Próximas extensiones (fuera de esta POC)
 
-- Multi-avión / multi-ruta simultánea (asignar carga entre varios vuelos).
-- Restricciones de compatibilidad (carga refrigerada, IATA hazmat, no apilable).
-- Función objetivo multi-criterio (ingreso, prioridad de cliente, perecibilidad).
+Ver la sección "Hoja de ruta" del [`README.md`](../README.md) para el detalle
+completo y en qué orden. Resumen técnico de lo que falta:
+
+- Aviones de pasajeros con **belly cargo**: capacidad variable (no fija) y
+  contenedores tipo LD3/LD6 en vez de pallets — el mecanismo de
+  `factor_disponibilidad` (sección 2, restricciones (2)-(4)) ya cubre la
+  parte de "capacidad reducida/variable", falta la geometría de contenedor
+  distinta.
+- Multi-avión / multi-ruta simultánea: optimizar toda la fila de aviones a
+  la vez (hoy es secuencial y greedy, ver sección 2.1) en vez de avión por
+  avión.
+- Restricciones de compatibilidad adicionales (carga refrigerada, IATA
+  hazmat, incompatibilidad entre productos — no apilable/riesgo alto ya
+  están implementados, ver sección 3.2).
+- Balance lateral (izquierdo/derecho) además del longitudinal — la
+  restricción (5) de CG hoy solo considera el brazo a lo largo del fuselaje.
+- Función objetivo multi-criterio (ingreso, prioridad de cliente,
+  perecibilidad).
 - Reoptimización dinámica cuando llega carga de último minuto (*late tender*).
-- Empaquetado 3D con optimización real (no heurística) usando CP-SAT / OR-Tools.
+- Empaquetado 3D con optimización real (no heurística) usando CP-SAT /
+  OR-Tools — ver `.claude/skills/comparar-solvers/` para la comparativa ya
+  hecha de solvers para la Etapa A (selección), que sirve de referencia.

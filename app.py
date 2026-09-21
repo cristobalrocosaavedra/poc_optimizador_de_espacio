@@ -5,6 +5,7 @@ Ejecutar con:  streamlit run app.py
 
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 
@@ -71,7 +72,35 @@ with st.sidebar:
     st.divider()
     n_avion_actual = st.session_state.get("num_avion", 1)
     st.header(f"✈️ Avión #{n_avion_actual} (este)")
-    modelo_avion = st.selectbox("Modelo de avión", ["B767F", "B737F"], index=0)
+    modelo_avion = st.selectbox("Modelo de avión", ["B767F", "B737F", "B777F", "MD11F"], index=0)
+
+    disponibilidad_variable = st.checkbox(
+        "Disponibilidad variable por vuelo",
+        value=False,
+        help="Un avión rara vez vuela con el 100% de su capacidad estructural libre para carga "
+        "(derates de combustible/peso — y más adelante, en aviones de pasajeros, espacio "
+        "compartido con el equipaje). Si lo activas, este avión sortea su disponibilidad real "
+        "dentro del rango de abajo en vez de usar siempre el mismo número — simula la "
+        "variabilidad real entre vuelos.",
+    )
+    if disponibilidad_variable:
+        rango_disponibilidad = st.slider(
+            "Rango de disponibilidad (%)", 50, 100, (75, 100), step=5,
+            help="Este avión sortea un valor dentro de este rango (reproducible: mismo avión + "
+            "misma semilla siempre da el mismo sorteo).",
+        )
+        rng_disponibilidad = random.Random(int(seed) * 1000 + n_avion_actual)
+        factor_disponibilidad = rng_disponibilidad.uniform(
+            rango_disponibilidad[0] / 100.0, rango_disponibilidad[1] / 100.0
+        )
+        st.caption(f"🎲 Disponibilidad sorteada para el avión #{n_avion_actual}: {factor_disponibilidad:.0%}")
+    else:
+        factor_disponibilidad = st.slider(
+            "Disponibilidad de este avión (%)", 50, 100, 100, step=5,
+            help="Qué % de la capacidad nominal (peso y volumen) está realmente libre para carga "
+            "en este vuelo — 100% = capacidad estructural completa.",
+        ) / 100.0
+
     modo_optimizacion = st.radio(
         "¿Qué hace el modelo?",
         ["Cumplir un monto objetivo", "Maximizar ingreso"],
@@ -205,6 +234,12 @@ with col_der:
         f"**Volumen total:** {avion.volumen_total_m3:,.1f} m³ (ya descuenta el contorno del fuselaje)  \n"
         f"**Rango CG admisible:** {avion.cg_min_m} – {avion.cg_max_m} m"
     )
+    if factor_disponibilidad < 1.0:
+        st.write(
+            f"**Disponible este vuelo ({factor_disponibilidad:.0%}):** "
+            f"{factor_disponibilidad * avion.peso_max_carga_kg:,.0f} kg, "
+            f"{factor_disponibilidad * avion.volumen_total_m3:,.1f} m³"
+        )
     st.caption(
         "Cada pallet tiene su contorno recortado hacia el fuselaje (menos altura útil junto "
         "a la pared) y respeta que nada se apoye sobre carga no apilable o de alto riesgo (⚠)."
@@ -217,9 +252,13 @@ if st.button(f"🚀 Optimizar carga del avión #{n_avion_actual}", type="primary
         if modo_optimizacion == "Cumplir un monto objetivo":
             resultado = optimizar_con_meta(
                 paquetes_efectivos, avion, monto_objetivo_usd=monto_objetivo, factor_seguridad_volumen=factor_seguridad,
+                factor_disponibilidad=factor_disponibilidad,
             )
         else:
-            resultado = optimizar(paquetes_efectivos, avion, factor_seguridad_volumen=factor_seguridad)
+            resultado = optimizar(
+                paquetes_efectivos, avion, factor_seguridad_volumen=factor_seguridad,
+                factor_disponibilidad=factor_disponibilidad,
+            )
 
     barra = st.progress(0.0, text="Empaquetando en 3D...")
     empaques = []
