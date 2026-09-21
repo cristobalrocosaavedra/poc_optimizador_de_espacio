@@ -274,9 +274,9 @@ if "resultado" in st.session_state:
         st.caption(f"Cajas cargadas: {n_colocados_3d} / {len(paquetes)} — objetivo: alcanzar la meta y luego maximizar el uso de volumen y peso disponibles.")
         if not resultado.cumple_meta:
             st.warning(
-                f"No se alcanzó la meta de ${resultado.monto_objetivo_usd:,.0f}: con el catálogo y "
-                f"espacio disponibles, el máximo posible es ${resultado.ingreso_maximo_posible:,.0f} "
-                f"(faltan ${resultado.faltante_para_meta_usd:,.0f}). Agrega más cajas o revisa el catálogo."
+                f"No se alcanzó la meta de \\${resultado.monto_objetivo_usd:,.0f}: con el catálogo y "
+                f"espacio disponibles, el máximo posible es \\${resultado.ingreso_maximo_posible:,.0f} "
+                f"(faltan \\${resultado.faltante_para_meta_usd:,.0f}). Agrega más cajas o revisa el catálogo."
             )
 
     with st.expander(
@@ -286,10 +286,10 @@ if "resultado" in st.session_state:
         ingreso_cargado_real = sum(c.paquete.ingreso_usd for e in empaques for c in e.colocadas)
         if abs(ingreso_cargado_real - resultado.ingreso_total) > 1:
             st.warning(
-                f"La Etapa A seleccionó ${resultado.ingreso_total:,.0f} por peso/volumen agregado, "
+                f"La Etapa A seleccionó \\${resultado.ingreso_total:,.0f} por peso/volumen agregado, "
                 f"pero {n_no_colocados_3d} caja(s) de esas no lograron ubicarse en el empaquetado 3D "
                 f"real (no había cómo acomodarlas geométricamente) y quedaron en tierra. Lo que "
-                f"realmente termina cargado en el avión es ${ingreso_cargado_real:,.0f}."
+                f"realmente termina cargado en el avión es \\${ingreso_cargado_real:,.0f}."
             )
 
         vol_permitido_m3 = factor_seguridad * avion.volumen_total_m3
@@ -377,18 +377,18 @@ if "resultado" in st.session_state:
             st.markdown(
                 f"**¿Sumar otras cajas y sacar otras daría más plata?** No: el ingreso máximo que "
                 f"matemáticamente se puede lograr con este stock y la capacidad de este avión (peso, "
-                f"volumen y balance) es ${resultado.ingreso_maximo_posible:,.0f} — ninguna otra "
+                f"volumen y balance) es \\${resultado.ingreso_maximo_posible:,.0f} — ninguna otra "
                 "combinación de paquetes puede superar ese techo, la Etapa A ya lo prueba al "
                 "resolverlo. "
                 + (
-                    f"Lo cargado aquí (${resultado.ingreso_total:,.0f}) es algo menos que ese techo "
+                    f"Lo cargado aquí (\\${resultado.ingreso_total:,.0f}) es algo menos que ese techo "
                     "porque se sacrificaron "
-                    f"${diferencia_por_empaquetado:,.0f} de ingreso a cambio de aprovechar mejor el "
+                    f"\\${diferencia_por_empaquetado:,.0f} de ingreso a cambio de aprovechar mejor el "
                     "espacio disponible. "
                     if diferencia_por_empaquetado > 1
                     else ""
                 )
-                + f"Para cerrar los ${resultado.faltante_para_meta_usd:,.0f} que faltan hace falta "
+                + f"Para cerrar los \\${resultado.faltante_para_meta_usd:,.0f} que faltan hace falta "
                 "más capacidad (avión más grande o más factor de seguridad de volumen) o más cajas "
                 "de alto valor en el stock — no una mejor selección de las mismas cajas."
             )
