@@ -26,7 +26,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from optimizador.datos_simulados import crear_avion, generar_catalogo_paquetes  # noqa: E402
 from optimizador.empaquetado_3d import empaquetar_posicion  # noqa: E402
-from optimizador.optimizador_carga import optimizar, optimizar_con_meta  # noqa: E402
+from optimizador.optimizador_carga import (  # noqa: E402
+    optimizar,
+    optimizar_con_meta,
+    repartir_obligatorio_en_fila,
+)
+
+# Tamaños de fila a probar para el reparto de carga obligatoria — pedidos
+# explícitamente para cubrir filas chicas y grandes, no solo un caso.
+AVIONES_EN_FILA_A_PROBAR = [3, 5, 7, 10]
 
 # Casos comunes y de borde. Cubren: meta fácil/inalcanzable/pegada al techo,
 # modo maximizar ingreso, ambos modelos de avión, stock diminuto, extremos de
@@ -142,6 +150,50 @@ def _validar_capacidades(resultado, avion, factor_seguridad: float) -> list[str]
     return problemas
 
 
+def verificar_reparto_obligatorio() -> bool:
+    """Valida `repartir_obligatorio_en_fila()`: con un stock donde la carga
+    obligatoria por sí sola NO cabe en un solo avión (n=8000, 20%
+    obligatorio — el mismo caso de borde ya confirmado alcanzable desde la
+    UI), prueba filas de distinto largo (3, 5, 7, 10 aviones) y confirma que:
+      - forzados + pospuestos == total de obligatorias del stock (el reparto
+        no pierde ni duplica cajas en la contabilidad),
+      - el resultado final (Etapa A + Etapa B) sigue sin violar capacidad ni
+        apilamiento en ningún caso, sea cual sea el largo de la fila.
+    """
+    print("=== Reparto de carga obligatoria entre aviones de la fila (n=8000, 20% obligatorio) ===\n")
+    paquetes = generar_catalogo_paquetes(n=8000, seed=42, pct_obligatorio=0.20, pct_no_apilable=0.15, pct_riesgo_alto=0.06)
+    avion = crear_avion("B767F")
+    total_obligatorio = sum(1 for p in paquetes if p.obligatorio)
+    ok = True
+    for aviones_restantes in AVIONES_EN_FILA_A_PROBAR:
+        efectivos, forzados, pospuestos = repartir_obligatorio_en_fila(paquetes, aviones_restantes)
+        if forzados + pospuestos != total_obligatorio:
+            print(
+                f"⚠️  aviones_restantes={aviones_restantes}: forzados+pospuestos "
+                f"({forzados + pospuestos}) != total obligatorio ({total_obligatorio})"
+            )
+            ok = False
+
+        resultado = optimizar_con_meta(efectivos, avion, monto_objetivo_usd=25_000, factor_seguridad_volumen=0.85)
+        empaques = [empaquetar_posicion(pos, resultado.asignacion[pos.id]) for pos in avion.posiciones]
+        problemas = _validar_capacidades(resultado, avion, 0.85)
+        violaciones = _contar_violaciones_apilado(empaques)
+        estado_fila_ok = not problemas and not violaciones
+        if not estado_fila_ok:
+            ok = False
+        marca = "✅" if estado_fila_ok else "❌"
+        print(
+            f"aviones_restantes={aviones_restantes:<2} forzados={forzados:<4} pospuestos={pospuestos:<4} "
+            f"estado_solver={resultado.estado_solver:<10} {marca}"
+        )
+        if problemas:
+            print(f"    problemas de capacidad: {problemas}")
+        if violaciones:
+            print(f"    {violaciones} violación(es) de apilamiento")
+    print()
+    return ok
+
+
 def correr(escenario: dict) -> dict:
     paquetes = generar_catalogo_paquetes(
         n=escenario["n"], seed=escenario["seed"], pct_obligatorio=escenario["pct_obl"],
@@ -196,6 +248,10 @@ def correr(escenario: dict) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--solo", help="Corre solo el escenario cuyo nombre contiene este texto")
+    parser.add_argument(
+        "--sin-reparto", action="store_true",
+        help="Salta la verificación de repartir_obligatorio_en_fila() (más rápido si ya confías en eso)",
+    )
     args = parser.parse_args()
 
     escenarios = ESCENARIOS
@@ -205,8 +261,12 @@ def main() -> int:
             print(f"Ningún escenario coincide con --solo {args.solo!r}")
             return 1
 
-    filas = []
     hay_problemas = False
+    if not args.solo and not args.sin_reparto:
+        if not verificar_reparto_obligatorio():
+            hay_problemas = True
+
+    filas = []
     for escenario in escenarios:
         print(f"→ {escenario['nombre']} ...", flush=True)
         fila = correr(escenario)

@@ -12,7 +12,8 @@ Ver docs/formulacion_matematica.md para el detalle del modelo. Hay dos modos:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 
 import pulp
 
@@ -47,6 +48,50 @@ class ResultadoOptimizacion:
     @property
     def cumple_meta(self) -> bool:
         return self.monto_objetivo_usd is None or self.faltante_para_meta_usd <= 0.01
+
+
+def repartir_obligatorio_en_fila(
+    paquetes: list[Paquete], aviones_restantes: int
+) -> tuple[list[Paquete], int, int]:
+    """Reparte la carga obligatoria del stock entre los aviones que quedan
+    en la fila, en vez de forzarla toda en el que se está optimizando ahora.
+
+    `pct_obligatorio` se aplica sobre TODO el stock de temporada (pensado
+    para la fila completa), pero cada corrida de `optimizar()` /
+    `optimizar_con_meta()` solo ve el stock remanente de este momento — sin
+    este reparto, forzaría el 100% de lo obligatorio que quede en el stock
+    sobre el próximo avión que se optimice, lo que puede ser matemáticamente
+    infactible si hay más carga obligatoria de la que un solo avión aguanta
+    (ver CLAUDE.md, confirmado alcanzable desde la UI con stock grande y
+    ≥20% obligatorio).
+
+    Si la carga obligatoria completa no entra en la porción proporcional
+    (`ceil(n_obligatorio / aviones_restantes)`) que le toca a este avión, se
+    fuerzan solo esas — de mayor densidad de valor primero, mismo criterio
+    que usa el resto del sistema para priorizar carga — y el resto queda con
+    `obligatorio=False` SOLO para esta corrida: el stock real (fuera de esta
+    función) no se toca, así que el próximo avión de la fila las vuelve a
+    ver como obligatorias, con `aviones_restantes` uno menos.
+
+    Con `aviones_restantes <= 1` (el comportamiento de antes de que existiera
+    esto) se fuerza toda la carga obligatoria, como siempre.
+
+    Devuelve `(paquetes_efectivos, n_forzados, n_pospuestos)`.
+    """
+    obligatorios = [p for p in paquetes if p.obligatorio]
+    if aviones_restantes <= 1 or not obligatorios:
+        return paquetes, len(obligatorios), 0
+
+    cupo = math.ceil(len(obligatorios) / aviones_restantes)
+    if cupo >= len(obligatorios):
+        return paquetes, len(obligatorios), 0
+
+    forzados = {p.id for p in sorted(obligatorios, key=lambda p: -p.densidad_valor)[:cupo]}
+    efectivos = [
+        p if (p.id in forzados or not p.obligatorio) else replace(p, obligatorio=False)
+        for p in paquetes
+    ]
+    return efectivos, len(forzados), len(obligatorios) - len(forzados)
 
 
 def _variables_y_restricciones(

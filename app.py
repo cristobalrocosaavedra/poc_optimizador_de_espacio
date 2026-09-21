@@ -16,7 +16,7 @@ import streamlit as st
 from optimizador.datos_simulados import generar_catalogo_paquetes, crear_avion
 from optimizador.empaquetado_3d import empaquetar_posicion
 from optimizador.entidades import Paquete
-from optimizador.optimizador_carga import optimizar, optimizar_con_meta
+from optimizador.optimizador_carga import optimizar, optimizar_con_meta, repartir_obligatorio_en_fila
 from optimizador.visualizacion import figura_avion, figura_posicion
 
 st.set_page_config(page_title="Optimizador de carga aérea", layout="wide")
@@ -44,6 +44,12 @@ with st.sidebar:
         "de tener un stock realista compartido entre varios aviones."
     )
     seed = st.number_input("Semilla aleatoria", value=42, step=1)
+    total_aviones_fila = st.number_input(
+        "Aviones planeados en esta fila", min_value=1, value=3, step=1,
+        help="Cuántos aviones en total van a despachar este stock. La carga obligatoria no se "
+        "fuerza toda en el primer avión que la encuentre — se reparte proporcionalmente entre "
+        "los aviones que quedan por optimizar, para que no le toque más de la que puede llevar.",
+    )
     pct_obligatorio = st.slider("% de cajas con contrato obligatorio", 0, 40, 10) / 100.0
     pct_no_apilable = st.slider(
         "% de cajas no apilables", 0, 50, 15,
@@ -174,6 +180,19 @@ with col_izq:
     kstock1.metric("Stock restante", f"{len(paquetes)} cajas")
     kstock2.metric("Ingreso potencial del stock", f"${sum(p.ingreso_usd for p in paquetes):,.0f}")
 
+    aviones_restantes = max(1, int(total_aviones_fila) - (n_avion_actual - 1))
+    paquetes_efectivos, n_obligatorio_forzado, n_obligatorio_pospuesto = repartir_obligatorio_en_fila(
+        paquetes, aviones_restantes,
+    )
+    if n_obligatorio_pospuesto:
+        st.caption(
+            f"📦 Carga obligatoria: se fuerzan {n_obligatorio_forzado} cajas en este avión (de "
+            f"{n_obligatorio_forzado + n_obligatorio_pospuesto} obligatorias en el stock) — las "
+            f"{n_obligatorio_pospuesto} restantes quedan pendientes para los "
+            f"{aviones_restantes - 1} avión(es) que quedan en la fila (avión #{n_avion_actual} "
+            f"de {total_aviones_fila} planeados)."
+        )
+
 with col_der:
     st.subheader(f"Avión #{n_avion_actual}: {avion.modelo}")
     st.write(
@@ -195,10 +214,10 @@ if st.button(f"🚀 Optimizar carga del avión #{n_avion_actual}", type="primary
     with st.spinner("Resolviendo modelo de asignación (MILP)..."):
         if modo_optimizacion == "Cumplir un monto objetivo":
             resultado = optimizar_con_meta(
-                paquetes, avion, monto_objetivo_usd=monto_objetivo, factor_seguridad_volumen=factor_seguridad,
+                paquetes_efectivos, avion, monto_objetivo_usd=monto_objetivo, factor_seguridad_volumen=factor_seguridad,
             )
         else:
-            resultado = optimizar(paquetes, avion, factor_seguridad_volumen=factor_seguridad)
+            resultado = optimizar(paquetes_efectivos, avion, factor_seguridad_volumen=factor_seguridad)
 
     barra = st.progress(0.0, text="Empaquetando en 3D...")
     empaques = []
