@@ -16,8 +16,10 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -29,7 +31,9 @@ from optimizador.optimizador_carga import optimizar, optimizar_con_meta  # noqa:
 # Casos comunes y de borde. Cubren: meta fácil/inalcanzable/pegada al techo,
 # modo maximizar ingreso, ambos modelos de avión, stock diminuto, extremos de
 # % no apilable/riesgo (incluido el control en 0%), meta=0, todo obligatorio,
-# y un factor de seguridad de volumen bajo (más margen para la Etapa B).
+# factor de seguridad de volumen bajo, carga densa (peso como cuello de
+# botella real — el generador de flores nunca lo produce solo, hay que
+# forzarlo) y un catálogo más allá del tope actual de la UI (8000).
 ESCENARIOS = [
     dict(nombre="meta fácil de cumplir", modelo="B767F", n=1500, seed=1,
          monto=10_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85),
@@ -55,7 +59,25 @@ ESCENARIOS = [
          monto=20_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.50),
     dict(nombre="catálogo grande (8000, tope del slider)", modelo="B767F", n=8000, seed=42,
          monto=35_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85),
+    dict(nombre="carga muy densa (fuerza que el peso sea el cuello de botella)", modelo="B767F", n=2000, seed=13,
+         monto=25_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85, denso=True),
+    dict(nombre="carga muy densa en B737F (payload mucho más chico, 10000 kg)", modelo="B737F", n=800, seed=13,
+         monto=12_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85, denso=True),
+    dict(nombre="catálogo 10000 (más allá del tope actual de la UI)", modelo="B767F", n=10_000, seed=42,
+         monto=35_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85),
 ]
+
+# Peso por caja para los escenarios "denso": muy por sobre el rango real de
+# flores (~2-15 kg por caja) para que el payload del avión (52.000 kg en el
+# B767F, 10.000 kg en el B737F) se agote mucho antes que el volumen — el
+# generador de flores reales nunca produce esto por sí solo.
+PESO_DENSO_KG_MIN = 15.0
+PESO_DENSO_KG_MAX = 25.0
+
+
+def _densificar(paquetes: list, seed: int) -> list:
+    rng = random.Random(seed + 999)
+    return [replace(p, peso_kg=round(rng.uniform(PESO_DENSO_KG_MIN, PESO_DENSO_KG_MAX), 2)) for p in paquetes]
 
 
 def _contar_violaciones_apilado(empaques) -> int:
@@ -110,6 +132,8 @@ def correr(escenario: dict) -> dict:
         n=escenario["n"], seed=escenario["seed"], pct_obligatorio=escenario["pct_obl"],
         pct_no_apilable=escenario["pct_no_apil"], pct_riesgo_alto=escenario["pct_riesgo"],
     )
+    if escenario.get("denso"):
+        paquetes = _densificar(paquetes, escenario["seed"])
     avion = crear_avion(escenario["modelo"])
 
     t0 = time.time()
