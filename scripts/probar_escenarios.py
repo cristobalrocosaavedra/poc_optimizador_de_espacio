@@ -65,6 +65,16 @@ ESCENARIOS = [
          monto=12_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85, denso=True),
     dict(nombre="catálogo 10000 (más allá del tope actual de la UI)", modelo="B767F", n=10_000, seed=42,
          monto=35_000, pct_obl=0.10, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85),
+    # % obligatorio alto (20%, dentro del rango 0-40% que permite el slider de
+    # la UI) con un stock grande (8000, el tope de la UI): la carga obligatoria
+    # POR SÍ SOLA ya no cabe (necesita ~93.7 m³, hay 55.8 m³ permitidos) — el
+    # MILP da "Infeasible" de verdad, no un timeout. El reparo de capacidad lo
+    # rescata igual (nunca revienta ni viola capacidad), pero de las ~1580
+    # cajas obligatorias solo caben ~650 — el resto se descarta en silencio
+    # pese a estar marcadas "debe ir sí o sí". Ver CLAUDE.md.
+    dict(nombre="obligatorio excede la capacidad del avión (20%, dentro del rango de la UI)", modelo="B767F", n=8000, seed=42,
+         monto=25_000, pct_obl=0.20, pct_no_apil=0.15, pct_riesgo=0.06, factor_seg=0.85,
+         estados_ok=("Optimal", "Not Solved", "Infeasible")),
 ]
 
 # Peso por caja para los escenarios "denso": muy por sobre el rango real de
@@ -201,7 +211,8 @@ def main() -> int:
         print(f"→ {escenario['nombre']} ...", flush=True)
         fila = correr(escenario)
         filas.append(fila)
-        if fila["violaciones_apilado"] or fila["problemas_capacidad"] or fila["estado_solver"] not in ("Optimal", "Not Solved"):
+        estados_ok = escenario.get("estados_ok", ("Optimal", "Not Solved"))
+        if fila["violaciones_apilado"] or fila["problemas_capacidad"] or fila["estado_solver"] not in estados_ok:
             hay_problemas = True
 
     ancho_nombre = max(len(f["nombre"]) for f in filas)
@@ -225,13 +236,14 @@ def main() -> int:
         )
 
     print()
-    for f in filas:
+    for escenario, f in zip(escenarios, filas):
+        estados_ok = escenario.get("estados_ok", ("Optimal", "Not Solved"))
         if f["problemas_capacidad"]:
             hay_problemas = True
             print(f"⚠️  {f['nombre']}: problemas de capacidad → {f['problemas_capacidad']}")
         if f["violaciones_apilado"]:
             print(f"⚠️  {f['nombre']}: {f['violaciones_apilado']} violación(es) de apilamiento en el 3D")
-        if f["estado_solver"] not in ("Optimal", "Not Solved"):
+        if f["estado_solver"] not in estados_ok:
             print(f"⚠️  {f['nombre']}: estado del solver inesperado → {f['estado_solver']}")
 
     if hay_problemas:

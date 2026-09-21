@@ -88,6 +88,23 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   asigna por posición" más abajo), aplicado a peso. No es un bug, pero si
   agregas diagnóstico de peso en `app.py` como el que ya existe para
   volumen, recuerda esto.
+- **"Obligatorio" puede exceder la capacidad de un avión — es alcanzable
+  desde la UI, no solo en pruebas extremas**: `pct_obligatorio` se aplica
+  sobre **todo el stock generado** (pensado para la fila completa de
+  aviones), pero `app.py` le pasa el stock remanente **completo** a la
+  optimización de un solo avión — no acota cuántas obligatorias le tocan a
+  ESE avión en particular. Con `n=8000` (el tope del slider) y
+  `pct_obligatorio=20%` (dentro del rango 0-40% que el slider permite), la
+  carga obligatoria SOLA ya pide ~93.7 m³ y solo hay ~55.8 m³ permitidos —
+  el MILP da `"Infeasible"` de verdad (no timeout). El reparo de capacidad
+  (`_reparar_capacidad_posicion`) lo rescata igual — nunca revienta ni viola
+  capacidad — pero termina descartando en silencio la mayoría de las cajas
+  obligatorias que no caben (de ~1580 obligatorias, solo ~650 embarcan).
+  **Esto no está comunicado en la UI todavía** — si el usuario pide agregar
+  esa visibilidad (un aviso tipo "se descartaron N cajas obligatorias por
+  falta de capacidad"), es un cambio chico en el panel de diagnóstico de
+  `app.py`, pero no lo agregues sin que lo pidan. Escenario de referencia:
+  `scripts/probar_escenarios.py`, "obligatorio excede la capacidad".
 - **Comparativa de solvers ya hecha**: antes de asumir que hay que cambiar
   de CBC, usa `.claude/skills/comparar-solvers/` — ya se armó y validó (las
   5 formulaciones coinciden en el óptimo de un catálogo chico) un
