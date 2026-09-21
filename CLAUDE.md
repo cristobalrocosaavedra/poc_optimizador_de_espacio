@@ -150,6 +150,12 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   `encoding="utf-8"` explícito usa cp1252 en Windows y revienta con el
   markdown de `docs/`. Todos los `read_text()` en `app.py` ya lo tienen —
   no lo quites.
+- **`ResultadoEmpaque.no_colocadas` es `list[Paquete]`, no `list[CajaColocada]`**
+  (a diferencia de `colocadas`, que sí envuelve cada `Paquete` en una
+  `CajaColocada` con `.paquete`). Escribir `c.paquete.id` sobre un elemento
+  de `no_colocadas` revienta con `AttributeError: 'Paquete' object has no
+  attribute 'paquete'` — es `c.id` directo. Ya pasó una vez en la tabla de
+  "No embarcados" de `app.py`.
 
 ## Tiempos de solve medidos (referencia, no los repitas de cero)
 
