@@ -4,10 +4,11 @@ Ver docs/formulacion_matematica.md para el detalle del modelo. Hay dos modos:
 
 - `optimizar()`: maximiza el ingreso total sujeto a la capacidad del avión.
 - `optimizar_con_meta()`: el ingreso ya no se maximiza — es un dato externo
-  (lo que el área comercial decidió que este vuelo debe facturar). El
-  modelo selecciona paquetes hasta alcanzar esa meta y, con eso ya
-  garantizado, maximiza el aprovechamiento del espacio disponible (volumen
-  y peso) entre todas las combinaciones que la cumplen.
+  (lo que el área comercial decidió que este vuelo debe facturar). El monto
+  objetivo es tanto piso como techo: el modelo selecciona paquetes cuyo
+  ingreso se acerque lo más posible a la meta sin pasarse por mucho (ver
+  `MARGEN_SUPERIOR_META`), y entre esas combinaciones, la que mejor
+  aprovecha el espacio disponible (volumen y peso).
 """
 
 from __future__ import annotations
@@ -47,7 +48,14 @@ class ResultadoOptimizacion:
 
     @property
     def cumple_meta(self) -> bool:
-        return self.monto_objetivo_usd is None or self.faltante_para_meta_usd <= 0.01
+        """La meta ahora es piso Y techo (ver `optimizar_con_meta`): el modelo
+        deliberadamente no siempre llega al centavo exacto (la granularidad de
+        las cajas no lo permite, y tampoco se pasa del margen superior), así
+        que "cumple" es estar dentro de `TOLERANCIA_META_RELATIVA` por debajo
+        del objetivo — no exigir el 100.00% exacto."""
+        if self.monto_objetivo_usd is None or self.monto_objetivo_usd <= 0:
+            return True
+        return self.ingreso_total >= self.monto_objetivo_usd * (1 - TOLERANCIA_META_RELATIVA)
 
 
 def repartir_obligatorio_en_fila(
@@ -279,18 +287,32 @@ def optimizar(
 #: factibilidad en un problema combinatorio muy difícil (hay que encontrar casi
 #: la ÚNICA combinación que logra ese ingreso exacto) y el solver se cuelga sin
 #: converger. Es del mismo orden que el `gapRel` del solver, así que no relaja
-#: la meta más de lo que la propia tolerancia del solver ya admite.
+#: la meta más de lo que la propia tolerancia del solver ya admite. También se
+#: usa como margen de "cumple_meta" (ver `ResultadoOptimizacion`): no siempre
+#: se puede tocar el centavo exacto por la granularidad de las cajas.
 TOLERANCIA_META_RELATIVA = 0.02
 
-#: Cuando el monto objetivo NO es alcanzable, el piso a exigir en la Fase 2 no
-#: puede ser "el máximo posible" a secas — eso cae en la misma zona dura que
-#: TOLERANCIA_META_RELATIVA evita, y aquí no hay ningún motivo para insistir en
-#: quedar pegado al techo (la meta ya se perdió de todas formas). Se le da un
-#: margen bastante más generoso para que la Fase 2 tenga espacio real donde
-#: encontrar mejores combinaciones de volumen/peso, sacrificando algo de
-#: ingreso a cambio — probado que el ingreso resultante apenas varía entre
-#: pedir el 100% o el 0% del máximo como piso, así que perder ese margen no
-#: cuesta casi nada de plata y sí gana bastante espacio utilizado.
+#: Cuánto se permite pasar del monto objetivo. Antes la meta era solo un piso
+#: (sin techo) y la Fase 2 maximizaba espacio libremente, lo que podía cargar
+#: bastante más plata de la pedida con tal de llenar más el avión — feedback
+#: explícito del usuario: "si te dije que debes llevar 25.500, no tienes por
+#: qué llevar más". Ahora la meta es piso Y techo: el margen es chico a
+#: propósito (mismo orden que TOLERANCIA_META_RELATIVA) para no perder la
+#: intención de "es tal monto", dejando solo el margen mínimo que la
+#: granularidad de las cajas y el gapRel del solver ya exigen.
+MARGEN_SUPERIOR_META = 0.02
+
+#: Cuando el monto objetivo NO es alcanzable ni con el margen superior, el
+#: piso a exigir en la Fase 2 no puede ser "el máximo posible" a secas — eso
+#: cae en la misma zona dura que TOLERANCIA_META_RELATIVA evita, y aquí no hay
+#: ningún motivo para insistir en quedar pegado al techo real del avión (la
+#: meta ya se perdió de todas formas, y como el techo real queda por debajo
+#: de la meta, no hay riesgo de "pasarse" de lo pedido). Se le da un margen
+#: bastante más generoso para que la Fase 2 tenga espacio real donde encontrar
+#: mejores combinaciones de volumen/peso, sacrificando algo de ingreso a
+#: cambio — probado que el ingreso resultante apenas varía entre pedir el
+#: 100% o el 0% del máximo como piso, así que perder ese margen no cuesta casi
+#: nada de plata y sí gana bastante espacio utilizado.
 MARGEN_META_INALCANZABLE = 0.10
 
 
@@ -301,79 +323,106 @@ def optimizar_con_meta(
     factor_seguridad_volumen: float = 0.85,
     tiempo_limite_s: int = 30,
 ) -> ResultadoOptimizacion:
-    """Selecciona paquetes para alcanzar un monto de ingreso ya decidido
-    externamente (no se maximiza el ingreso), y dentro de eso, maximiza el
+    """Selecciona paquetes para acercarse a un monto de ingreso ya decidido
+    externamente sin pasarse por mucho (no se maximiza el ingreso — la meta
+    es piso Y techo), y entre las combinaciones que logran eso, maximiza el
     aprovechamiento del espacio disponible del avión.
 
     Se resuelve en dos fases:
 
-    1. Se calcula el ingreso máximo posible (`optimizar()`), para saber si el
-       monto objetivo es alcanzable con la capacidad y el catálogo
-       disponibles. El piso de ingreso a exigir es `min(monto_objetivo,
-       ingreso_máximo_posible)` — si el objetivo no es alcanzable, se exige
-       el máximo posible y se reporta cuánto falta (`faltante_para_meta_usd`).
-    2. Con ese piso de ingreso como restricción (con un pequeño margen, ver
-       `TOLERANCIA_META_RELATIVA`), se maximiza una utilización combinada de
-       espacio: `volumen_usado / volumen_total + peso_usado / peso_máximo`,
-       en vez de maximizar ingreso.
+    1. Se maximiza el ingreso sujeto a que no exceda `monto_objetivo_usd *
+       (1 + MARGEN_SUPERIOR_META)` (el "techo"). Si el objetivo es alcanzable,
+       esto encuentra el ingreso más cercano posible a la meta sin pasarse
+       del margen. Si NO es alcanzable ni con margen, esta restricción no ata
+       — el resultado es directamente el ingreso máximo real del avión con
+       este stock (se reutiliza tal cual como `ingreso_maximo_posible`, sin
+       necesidad de un solve aparte).
+    2. Con ese ingreso como referencia (piso `ingreso_techo * (1 - margen)`,
+       techo `monto_objetivo_usd * (1 + MARGEN_SUPERIOR_META)`), se maximiza
+       una utilización combinada de espacio: `volumen_usado / volumen_total +
+       peso_usado / peso_máximo`, en vez de maximizar ingreso — eligiendo,
+       entre las combinaciones que logran (casi) el mismo ingreso que la Fase
+       1, la que mejor usa el espacio.
 
-    Si la meta ya está prácticamente en el techo de lo alcanzable, no hay
-    margen real para reoptimizar por espacio sin sacrificar ingreso — y en
-    ese caso la Fase 2 directamente se salta (la mejor combinación de espacio
-    ES la de ingreso máximo). Si la meta NO es alcanzable, tampoco tiene
-    sentido pedirle al piso que se quede pegado al máximo (ver
-    `MARGEN_META_INALCANZABLE`): ya que la meta se perdió de todas formas, se
-    le da a la Fase 2 margen real para optimizar espacio en vez de forzarla a
-    buscar casi la única combinación que roza el ingreso máximo.
+    Si la Fase 1 ya está prácticamente pegada a su propio techo, no hay
+    margen real para reoptimizar por espacio sin arriesgarse a pasarse de la
+    meta — y en ese caso la Fase 2 directamente se salta. Si la meta NO es
+    alcanzable, el margen para la Fase 2 es más generoso (ver
+    `MARGEN_META_INALCANZABLE`): ya que la meta se perdió de todas formas y el
+    techo real del avión queda por debajo de lo pedido, no hay riesgo de
+    pasarse — dejar que la Fase 2 sacrifique algo de ingreso por mejor uso del
+    espacio no cuesta la intención original de "es tal monto".
     """
-    resultado_maximo = optimizar(paquetes, avion, factor_seguridad_volumen, tiempo_limite_s)
-    ingreso_maximo_posible = resultado_maximo.ingreso_total
-    objetivo_alcanzable = monto_objetivo_usd <= ingreso_maximo_posible
-    piso_ingreso = min(monto_objetivo_usd, ingreso_maximo_posible)
+    techo_meta = monto_objetivo_usd * (1 + MARGEN_SUPERIOR_META)
 
-    if objetivo_alcanzable and piso_ingreso >= ingreso_maximo_posible * (1 - TOLERANCIA_META_RELATIVA):
-        resultado_maximo.monto_objetivo_usd = monto_objetivo_usd
-        resultado_maximo.ingreso_maximo_posible = ingreso_maximo_posible
-        return resultado_maximo
+    problema1 = pulp.LpProblem("carga_avion_meta_techo", pulp.LpMaximize)
+    x1 = _variables_y_restricciones(problema1, paquetes, avion, factor_seguridad_volumen)
+    ingreso_expr1 = pulp.lpSum(
+        paq.ingreso_usd * x1[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
+    )
+    problema1 += ingreso_expr1 <= techo_meta, "techo_meta"
+    problema1 += ingreso_expr1
+
+    estado1 = _resolver(problema1, tiempo_limite_s)
+    if estado1 == "Infeasible":
+        # El techo es provablemente incompatible con las restricciones duras
+        # (típicamente: hay carga obligatoria cuyo ingreso ya excede el techo
+        # por sí sola — no hay forma de respetar el techo sin dejar de
+        # embarcar carga obligatoria). A diferencia de "Not Solved" (el
+        # solver no terminó a tiempo), acá no hay nada que extraer ni reparar
+        # — CBC ya probó que no existe ninguna solución. Cae al resultado sin
+        # restricción de techo, que sí es factible (asumiendo que el problema
+        # sin meta lo es) — el techo queda sin respetar en este caso de
+        # borde, mejor eso que un resultado con el balance del avión roto.
+        resultado_sin_techo = optimizar(paquetes, avion, factor_seguridad_volumen, tiempo_limite_s)
+        resultado_sin_techo.monto_objetivo_usd = monto_objetivo_usd
+        resultado_sin_techo.ingreso_maximo_posible = resultado_sin_techo.ingreso_total
+        return resultado_sin_techo
+
+    resultado1 = _extraer_resultado(estado1, x1, paquetes, avion, factor_seguridad_volumen)
+    ingreso_techo = resultado1.ingreso_total
+    objetivo_alcanzable = ingreso_techo >= monto_objetivo_usd * (1 - TOLERANCIA_META_RELATIVA)
+
+    if ingreso_techo >= techo_meta * (1 - TOLERANCIA_META_RELATIVA):
+        resultado1.monto_objetivo_usd = monto_objetivo_usd
+        resultado1.ingreso_maximo_posible = ingreso_techo
+        return resultado1
 
     margen = TOLERANCIA_META_RELATIVA if objetivo_alcanzable else MARGEN_META_INALCANZABLE
-    piso_con_margen = piso_ingreso * (1 - margen)
+    piso_ingreso = ingreso_techo * (1 - margen)
 
-    problema = pulp.LpProblem("carga_avion_meta_espacio", pulp.LpMaximize)
-    x = _variables_y_restricciones(problema, paquetes, avion, factor_seguridad_volumen)
-
-    problema += (
-        pulp.lpSum(
-            paq.ingreso_usd * x[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
-        )
-        >= piso_con_margen,
-        "piso_ingreso",
+    problema2 = pulp.LpProblem("carga_avion_meta_espacio", pulp.LpMaximize)
+    x2 = _variables_y_restricciones(problema2, paquetes, avion, factor_seguridad_volumen)
+    ingreso_expr2 = pulp.lpSum(
+        paq.ingreso_usd * x2[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
     )
+    problema2 += ingreso_expr2 >= piso_ingreso, "piso_ingreso"
+    problema2 += ingreso_expr2 <= techo_meta, "techo_meta"
 
     volumen_total_m3 = avion.volumen_total_m3
     peso_total_kg = avion.peso_max_carga_kg
     utilizacion_volumen = pulp.lpSum(
-        paq.volumen_m3 * x[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
+        paq.volumen_m3 * x2[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
     ) / volumen_total_m3
     utilizacion_peso = pulp.lpSum(
-        paq.peso_kg * x[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
+        paq.peso_kg * x2[(paq.id, pos.id)] for paq in paquetes for pos in avion.posiciones
     ) / peso_total_kg
-    problema += utilizacion_volumen + utilizacion_peso
+    problema2 += utilizacion_volumen + utilizacion_peso
 
     # La Fase 2 puede caer en una zona dura para el solver (pedirle un piso de
     # ingreso cercano al óptimo lo obliga a acotar casi la única combinación que
     # lo logra). Se le da menos tiempo que a la Fase 1: si no llega a una
     # solución óptima confirmada, mejor no confiar en un incumbente a medio
-    # resolver y volver a la solución de ingreso máximo, que siempre es válida
-    # y ya cumple el piso.
-    estado = _resolver(problema, min(tiempo_limite_s, 15))
-    if estado != "Optimal":
-        resultado_maximo.monto_objetivo_usd = monto_objetivo_usd
-        resultado_maximo.ingreso_maximo_posible = ingreso_maximo_posible
-        return resultado_maximo
+    # resolver y volver a la solución de la Fase 1, que siempre es válida y ya
+    # respeta el piso y el techo.
+    estado2 = _resolver(problema2, min(tiempo_limite_s, 15))
+    if estado2 != "Optimal":
+        resultado1.monto_objetivo_usd = monto_objetivo_usd
+        resultado1.ingreso_maximo_posible = ingreso_techo
+        return resultado1
 
     return _extraer_resultado(
-        estado, x, paquetes, avion, factor_seguridad_volumen,
+        estado2, x2, paquetes, avion, factor_seguridad_volumen,
         monto_objetivo_usd=monto_objetivo_usd,
-        ingreso_maximo_posible=ingreso_maximo_posible,
+        ingreso_maximo_posible=ingreso_techo,
     )

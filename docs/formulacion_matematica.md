@@ -126,46 +126,71 @@ En operación real, el ingreso a lograr no siempre es algo que el modelo deba
 maximizar: muchas veces el área comercial **ya decidió** cuánto debe
 facturar el vuelo, y entrega ese monto junto con el catálogo de paquetes
 disponibles. En ese caso la función objetivo original deja de tener
-sentido — el rol del modelo pasa a ser (a) seleccionar paquetes hasta
-alcanzar ese monto y (b) usar el espacio restante de la forma más eficiente
-posible. Esto se resuelve en dos fases, con el mismo conjunto de
+sentido — el rol del modelo pasa a ser (a) seleccionar paquetes cuyo
+ingreso se acerque a ese monto **sin pasarse por mucho** (el monto objetivo
+es piso Y techo, no solo piso — si el área comercial dijo `M`, cargar bastante
+más que `M` solo para llenar espacio no es el objetivo) y (b), entre las
+combinaciones que logran eso, usar el espacio disponible de la forma más
+eficiente posible. Esto se resuelve en dos fases, con el mismo conjunto de
 restricciones (1)-(6):
 
-**Fase 1 — techo de ingreso.** Se resuelve el modelo original (maximizar
-`Σ ingreso_i x_{i,p}`) para conocer el ingreso máximo posible
-`ingreso_max` con el catálogo y la capacidad disponibles. Esto determina si
-el monto objetivo `M` es alcanzable: el piso de ingreso a exigir es
-`piso = min(M, ingreso_max)`.
+**Fase 1 — el mejor ingreso posible sin exceder el techo.** Se resuelve el
+modelo original (maximizar `Σ ingreso_i x_{i,p}`) pero con una restricción
+adicional: `Σ ingreso_i x_{i,p} ≤ techo`, donde `techo = M · (1 + δ)` (`δ`
+un margen superior chico, del orden del `gapRel` del solver — no dejar que
+el ingreso se pase de la meta salvo lo mínimo que la granularidad de las
+cajas y la tolerancia del propio solver ya exigen). El resultado,
+`ingreso_techo`, es el ingreso más cercano a `M` sin pasarse del margen —
+salvo que `M` no sea alcanzable ni con margen, en cuyo caso la restricción
+de techo no ata y `ingreso_techo` es directamente el ingreso máximo real del
+avión con este stock (mismo valor que se reportaría como `ingreso_max` para
+calcular `faltante`, sin necesidad de un solve aparte).
 
-**Fase 2 — maximizar espacio sujeto al piso de ingreso.** Se agrega la
-restricción `Σ ingreso_i x_{i,p} ≥ piso · (1 − ε)` (con `ε` una tolerancia
-pequeña, del orden del `gapRel` del solver — exigir el piso exacto vuelve la
-sola factibilidad muy difícil de resolver rápido) y se cambia la función
-objetivo a maximizar el aprovechamiento combinado de volumen y peso:
+Caso de borde: si hay carga **obligatoria** (restricción (1) con `= 1`) cuyo
+ingreso por sí solo ya excede `techo`, la Fase 1 es **infactible de verdad**
+(no un timeout) — no existe ninguna asignación que respete el techo y a la
+vez embarque toda la carga obligatoria. En ese caso se cae directamente al
+modelo original sin restricción de techo (equivalente a la Etapa A de
+`optimizar()`): se prioriza no romper el balance del avión ni la semántica
+de "obligatorio" antes que respetar el techo en un caso que matemáticamente
+no admite ambas cosas a la vez.
+
+**Fase 2 — maximizar espacio sujeto a piso Y techo de ingreso.** Se agrega
+`Σ ingreso_i x_{i,p} ≥ piso` (con `piso = ingreso_techo · (1 − ε)`, `ε` la
+misma tolerancia chica que arriba — exigir el piso exacto vuelve la sola
+factibilidad muy difícil de resolver rápido) **y** se mantiene
+`Σ ingreso_i x_{i,p} ≤ techo`, y se cambia la función objetivo a maximizar
+el aprovechamiento combinado de volumen y peso:
 
 ```
 maximizar   (Σ_i Σ_p vol_i · x_{i,p}) / V_avión   +   (Σ_i Σ_p peso_i · x_{i,p}) / PesoMax_avión
-sujeto a    Σ_i Σ_p ingreso_i · x_{i,p}  ≥  piso · (1 − ε)
+sujeto a    piso  ≤  Σ_i Σ_p ingreso_i · x_{i,p}  ≤  techo
             (1)-(6) igual que el modelo original
 ```
 
-Si `piso` ya está prácticamente en `ingreso_max` (dentro de esa misma
-tolerancia) **y** `M` es alcanzable, no queda margen real para reoptimizar
-por espacio sin sacrificar ingreso, así que se usa directamente el
-resultado de la Fase 1.
+Entre las combinaciones que logran (casi) el mismo ingreso que encontró la
+Fase 1, sin pasarse del techo, esta fase elige la que mejor usa el espacio
+— nunca la que más ingreso agrega, que es justamente lo que se quería
+evitar.
 
-Si el monto objetivo `M` no es alcanzable (`M > ingreso_max`), se reporta
-`faltante = M − ingreso_max` — pero el piso de la Fase 2 en ese caso NO se
-fija en `ingreso_max` a secas: como la meta ya se perdió de todas formas,
-insistir en quedar pegado al techo no tiene sentido y cae en la misma zona
-dura para el solver que `ε` evita. Se usa un margen bastante más generoso
-(`piso = ingreso_max · (1 − 0.10)`) para que la Fase 2 tenga espacio real
-donde optimizar — probado sobre un catálogo de referencia que el ingreso
-resultante apenas varía entre pedir 100% o 0% del máximo como piso, así que
-ese margen cuesta casi nada de plata y gana bastante espacio utilizado
-(volumen realmente aprovechado: ~64% exigiendo el piso pegado al techo, que
-además el solver no siempre logra probar como óptimo a tiempo, vs. ~74-85%
-con el margen generoso).
+Si `ingreso_techo` ya está prácticamente en `techo` (dentro de esa misma
+tolerancia), no queda margen real para reoptimizar por espacio sin
+arriesgarse a pasarse del techo, así que se usa directamente el resultado
+de la Fase 1.
+
+Si el monto objetivo `M` no es alcanzable ni con margen, se reporta
+`faltante = M − ingreso_techo` — pero el piso de la Fase 2 en ese caso NO se
+fija pegado a `ingreso_techo` a secas: como la meta ya se perdió de todas
+formas y el techo real del avión queda por debajo de `M` (no hay riesgo de
+pasarse de lo pedido), insistir en quedar pegado al techo no tiene sentido y
+cae en la misma zona dura para el solver que `ε` evita. Se usa un margen
+bastante más generoso (`piso = ingreso_techo · (1 − 0.10)`) para que la Fase
+2 tenga espacio real donde optimizar — probado sobre un catálogo de
+referencia que el ingreso resultante apenas varía entre pedir 100% o 0% del
+máximo como piso, así que ese margen cuesta casi nada de plata y gana
+bastante espacio utilizado (volumen realmente aprovechado: ~64% exigiendo
+el piso pegado al techo, que además el solver no siempre logra probar como
+óptimo a tiempo, vs. ~74-85% con el margen generoso).
 
 ---
 

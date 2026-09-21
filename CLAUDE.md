@@ -117,6 +117,19 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   etc.) — combina geometría de N cajas en un solo `Mesh3d`/`Scatter3d`. Si
   agregas una figura nueva, sigue el mismo patrón, no emitas un trace por
   elemento.
+- **Meta=0 (o muy baja) + carga obligatoria puede dejar la Fase 1
+  genuinamente infactible**: `optimizar_con_meta()` restringe la Fase 1 a
+  `ingreso ≤ techo_meta`. Si hay paquetes obligatorios (`total_asignacion ==
+  1`, no opcional) cuyo ingreso por sí solo ya excede `techo_meta`, no existe
+  ninguna asignación que respete ambas cosas — CBC devuelve `"Infeasible"`
+  de verdad (no timeout), y a diferencia de `"Not Solved"`, el reparo de
+  capacidad NO alcanza a salvarlo bien: se detectó con el escenario "meta =
+  0" (que trae 10% obligatorio por defecto) terminando con el **CG fuera de
+  rango** (el reparo de capacidad no protege balance, solo peso/volumen por
+  posición). Por eso `optimizar_con_meta()` chequea `estado1 == "Infeasible"`
+  explícitamente y cae a `optimizar()` sin restricción de techo — más vale
+  no respetar el techo en ese caso de borde que devolver un avión
+  desbalanceado. Si tocas la Fase 1, no quites ese chequeo.
 - **La Fase 2 de `optimizar_con_meta()` puede colgarse cerca del óptimo**:
   pedirle al solver "ingreso ≥ prácticamente el máximo" es un problema de
   factibilidad muy duro (casi la única combinación lo logra). Por eso existen
@@ -157,6 +170,14 @@ mal en catálogos más grandes.
 - El monto objetivo por avión **no lo optimiza el modelo** — es un dato
   externo (área comercial). El modelo optimiza selección + espacio para
   alcanzarlo. No conviertas esto en "maximizar ingreso" por defecto.
+- La meta es **piso Y techo**, no un piso libre — cambio explícito del
+  usuario ("si te dije que debes llevar 25.500, no tienes por qué llevar
+  más"). Antes la Fase 2 maximizaba espacio sin límite superior de ingreso y
+  podía pasarse bastante de la meta con tal de llenar más el avión; ahora
+  `MARGEN_SUPERIOR_META` (2%) acota cuánto se puede exceder. No vuelvas al
+  diseño de piso libre sin que el usuario lo pida — ver
+  `optimizar_con_meta()` en `optimizador_carga.py` y la sección 2.1 de
+  `docs/formulacion_matematica.md`.
 - El stock es **compartido y se agota en fila** entre aviones (no un
   catálogo por vuelo). Ver `historial_despachos`/`num_avion` en
   `session_state`.

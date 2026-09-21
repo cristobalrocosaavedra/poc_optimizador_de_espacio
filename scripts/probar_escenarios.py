@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from optimizador.datos_simulados import crear_avion, generar_catalogo_paquetes  # noqa: E402
 from optimizador.empaquetado_3d import empaquetar_posicion  # noqa: E402
 from optimizador.optimizador_carga import (  # noqa: E402
+    MARGEN_SUPERIOR_META,
     optimizar,
     optimizar_con_meta,
     repartir_obligatorio_en_fila,
@@ -127,7 +128,7 @@ def _contar_violaciones_apilado(empaques) -> int:
     return violaciones
 
 
-def _validar_capacidades(resultado, avion, factor_seguridad: float) -> list[str]:
+def _validar_capacidades(resultado, avion, factor_seguridad: float, paquetes: list | None = None) -> list[str]:
     """Chequeo de sanidad de la Etapa A: nada debería exceder peso/volumen
     por posición, payload del avión, o el rango de CG. Si esto falla, el MILP
     o su extracción de resultado tiene un bug real."""
@@ -147,6 +148,19 @@ def _validar_capacidades(resultado, avion, factor_seguridad: float) -> list[str]
         avion.cg_min_m - 1e-6 <= resultado.brazo_resultante_m <= avion.cg_max_m + 1e-6
     ):
         problemas.append(f"CG {resultado.brazo_resultante_m:.2f} fuera de [{avion.cg_min_m}, {avion.cg_max_m}]")
+    if resultado.monto_objetivo_usd is not None and resultado.monto_objetivo_usd > 0:
+        techo = resultado.monto_objetivo_usd * (1 + MARGEN_SUPERIOR_META)
+        # Si la carga obligatoria por sí sola ya suma más que el techo, pasarse
+        # es matemáticamente inevitable (optimizar_con_meta cae al resultado
+        # sin techo a propósito en ese caso — ver CLAUDE.md) — no es una
+        # violación real, solo hay que excluir ese caso conocido.
+        ingreso_obligatorio = sum(p.ingreso_usd for p in paquetes if p.obligatorio) if paquetes else 0.0
+        if resultado.ingreso_total > techo + 1.0 and ingreso_obligatorio <= techo + 1.0:
+            problemas.append(
+                f"ingreso {resultado.ingreso_total:.0f} excede el techo de la meta "
+                f"{techo:.0f} (meta {resultado.monto_objetivo_usd:.0f} + margen) sin que la "
+                f"carga obligatoria ({ingreso_obligatorio:.0f}) lo explique"
+            )
     return problemas
 
 
@@ -176,7 +190,7 @@ def verificar_reparto_obligatorio() -> bool:
 
         resultado = optimizar_con_meta(efectivos, avion, monto_objetivo_usd=25_000, factor_seguridad_volumen=0.85)
         empaques = [empaquetar_posicion(pos, resultado.asignacion[pos.id]) for pos in avion.posiciones]
-        problemas = _validar_capacidades(resultado, avion, 0.85)
+        problemas = _validar_capacidades(resultado, avion, 0.85, efectivos)
         violaciones = _contar_violaciones_apilado(empaques)
         estado_fila_ok = not problemas and not violaciones
         if not estado_fila_ok:
@@ -222,7 +236,7 @@ def correr(escenario: dict) -> dict:
     n_colocados = sum(len(e.colocadas) for e in empaques)
     n_no_colocados_3d = sum(len(e.no_colocadas) for e in empaques)
 
-    problemas = _validar_capacidades(resultado, avion, escenario["factor_seg"])
+    problemas = _validar_capacidades(resultado, avion, escenario["factor_seg"], paquetes)
     violaciones = _contar_violaciones_apilado(empaques)
 
     return dict(
