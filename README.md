@@ -96,7 +96,11 @@ Luego, en la app:
    posible.
 3. Click en **"Optimizar carga del avión"** y revisa el resultado: vista 3D
    completa (fuselaje, contorno de pallet, layout izquierdo/derecho),
-   detalle por pallet, y qué quedó fuera.
+   detalle por pallet, y qué quedó fuera. Si no se alcanza la meta, el panel
+   **"¿Por qué este resultado? (diagnóstico)"** explica si el cuello de
+   botella fue volumen o peso (agregado o de algún pallet en particular),
+   si el ingreso mostrado ya es el máximo matemáticamente posible con ese
+   stock y ese avión, y qué paquetes de mayor valor quedaron fuera.
 4. Click en **"Confirmar despacho y pasar al siguiente"**: descuenta del
    stock lo que ese avión realmente cargó, guarda el resultado en el
    historial de despacho, y pasa al avión siguiente — que toma lo que

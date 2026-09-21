@@ -16,7 +16,7 @@ import streamlit as st
 from optimizador.datos_simulados import generar_catalogo_paquetes, crear_avion
 from optimizador.empaquetado_3d import empaquetar_posicion
 from optimizador.entidades import Paquete
-from optimizador.optimizador_carga import optimizar, optimizar_con_meta
+from optimizador.optimizador_carga import optimizar, optimizar_con_meta, repartir_obligatorio_en_fila
 from optimizador.visualizacion import figura_avion, figura_posicion
 
 st.set_page_config(page_title="Optimizador de carga aérea", layout="wide")
@@ -44,6 +44,12 @@ with st.sidebar:
         "de tener un stock realista compartido entre varios aviones."
     )
     seed = st.number_input("Semilla aleatoria", value=42, step=1)
+    total_aviones_fila = st.number_input(
+        "Aviones planeados en esta fila", min_value=1, value=3, step=1,
+        help="Cuántos aviones en total van a despachar este stock. La carga obligatoria no se "
+        "fuerza toda en el primer avión que la encuentre — se reparte proporcionalmente entre "
+        "los aviones que quedan por optimizar, para que no le toque más de la que puede llevar.",
+    )
     pct_obligatorio = st.slider("% de cajas con contrato obligatorio", 0, 40, 10) / 100.0
     pct_no_apilable = st.slider(
         "% de cajas no apilables", 0, 50, 15,
@@ -174,6 +180,19 @@ with col_izq:
     kstock1.metric("Stock restante", f"{len(paquetes)} cajas")
     kstock2.metric("Ingreso potencial del stock", f"${sum(p.ingreso_usd for p in paquetes):,.0f}")
 
+    aviones_restantes = max(1, int(total_aviones_fila) - (n_avion_actual - 1))
+    paquetes_efectivos, n_obligatorio_forzado, n_obligatorio_pospuesto = repartir_obligatorio_en_fila(
+        paquetes, aviones_restantes,
+    )
+    if n_obligatorio_pospuesto:
+        st.caption(
+            f"📦 Carga obligatoria: se fuerzan {n_obligatorio_forzado} cajas en este avión (de "
+            f"{n_obligatorio_forzado + n_obligatorio_pospuesto} obligatorias en el stock) — las "
+            f"{n_obligatorio_pospuesto} restantes quedan pendientes para los "
+            f"{aviones_restantes - 1} avión(es) que quedan en la fila (avión #{n_avion_actual} "
+            f"de {total_aviones_fila} planeados)."
+        )
+
 with col_der:
     st.subheader(f"Avión #{n_avion_actual}: {avion.modelo}")
     st.write(
@@ -195,10 +214,10 @@ if st.button(f"🚀 Optimizar carga del avión #{n_avion_actual}", type="primary
     with st.spinner("Resolviendo modelo de asignación (MILP)..."):
         if modo_optimizacion == "Cumplir un monto objetivo":
             resultado = optimizar_con_meta(
-                paquetes, avion, monto_objetivo_usd=monto_objetivo, factor_seguridad_volumen=factor_seguridad,
+                paquetes_efectivos, avion, monto_objetivo_usd=monto_objetivo, factor_seguridad_volumen=factor_seguridad,
             )
         else:
-            resultado = optimizar(paquetes, avion, factor_seguridad_volumen=factor_seguridad)
+            resultado = optimizar(paquetes_efectivos, avion, factor_seguridad_volumen=factor_seguridad)
 
     barra = st.progress(0.0, text="Empaquetando en 3D...")
     empaques = []
@@ -258,6 +277,141 @@ if "resultado" in st.session_state:
                 f"No se alcanzó la meta de ${resultado.monto_objetivo_usd:,.0f}: con el catálogo y "
                 f"espacio disponibles, el máximo posible es ${resultado.ingreso_maximo_posible:,.0f} "
                 f"(faltan ${resultado.faltante_para_meta_usd:,.0f}). Agrega más cajas o revisa el catálogo."
+            )
+
+    with st.expander(
+        "🔍 ¿Por qué este resultado? (diagnóstico)",
+        expanded=es_modo_meta and not resultado.cumple_meta,
+    ):
+        ingreso_cargado_real = sum(c.paquete.ingreso_usd for e in empaques for c in e.colocadas)
+        if abs(ingreso_cargado_real - resultado.ingreso_total) > 1:
+            st.warning(
+                f"La Etapa A seleccionó ${resultado.ingreso_total:,.0f} por peso/volumen agregado, "
+                f"pero {n_no_colocados_3d} caja(s) de esas no lograron ubicarse en el empaquetado 3D "
+                f"real (no había cómo acomodarlas geométricamente) y quedaron en tierra. Lo que "
+                f"realmente termina cargado en el avión es ${ingreso_cargado_real:,.0f}."
+            )
+
+        vol_permitido_m3 = factor_seguridad * avion.volumen_total_m3
+        vol_pct_permitido = vol_total / vol_permitido_m3 if vol_permitido_m3 else 0.0
+        peso_pct = peso_total / avion.peso_max_carga_kg if avion.peso_max_carga_kg else 0.0
+
+        st.markdown("**¿Qué se llenó primero: el volumen o el peso?**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption(
+                f"Volumen: {vol_total:.1f} m³ usados de {vol_permitido_m3:.1f} m³ permitidos "
+                f"(factor de seguridad {factor_seguridad:.0%} de los {avion.volumen_total_m3:.1f} m³ "
+                "físicos totales)"
+            )
+            st.progress(min(vol_pct_permitido, 1.0))
+        with c2:
+            st.caption(
+                f"Peso: {peso_total:,.0f} kg usados de {avion.peso_max_carga_kg:,.0f} kg de payload "
+                "máximo"
+            )
+            st.progress(min(peso_pct, 1.0))
+
+        # El MILP asigna por POSICIÓN de pallet (cada una con su propio tope de peso/volumen), no
+        # contra un solo pozo agregado — así que un avión puede verse con margen "en total" y aun
+        # así tener varios pallets individuales ya llenos, que es lo que de verdad frena que entren
+        # más cajas (el resto simplemente no cabe AHÍ, aunque sobre espacio en otro pallet).
+        posiciones_llenas_vol = 0
+        posiciones_llenas_peso = 0
+        for pos in avion.posiciones:
+            asignados_pos = resultado.asignacion[pos.id]
+            vol_max_pos = factor_seguridad * pos.volumen_max_m3
+            peso_pos = sum(p.peso_kg for p in asignados_pos)
+            vol_pos = sum(p.volumen_m3 for p in asignados_pos)
+            if vol_max_pos and vol_pos / vol_max_pos >= 0.95:
+                posiciones_llenas_vol += 1
+            if pos.peso_max_kg and peso_pos / pos.peso_max_kg >= 0.95:
+                posiciones_llenas_peso += 1
+        n_posiciones = len(avion.posiciones)
+
+        if posiciones_llenas_vol or posiciones_llenas_peso:
+            partes = []
+            if posiciones_llenas_vol:
+                partes.append(f"{posiciones_llenas_vol}/{n_posiciones} al tope de **volumen**")
+            if posiciones_llenas_peso:
+                partes.append(f"{posiciones_llenas_peso}/{n_posiciones} al tope de **peso**")
+            nota_empaquetado = (
+                " (el volumen *realmente cargado* de arriba queda por debajo de este tope "
+                "precisamente porque el empaquetado 3D real no logró ubicar todo lo que la Etapa A "
+                "asignó — ver aviso arriba; no es que sobrara capacidad sin usar)."
+                if n_no_colocados_3d
+                else "."
+            )
+            st.info(
+                f"La Etapa A ya dejó {' y '.join(partes)} — el modelo asigna posición por "
+                "posición (no contra un solo pozo agregado), así que el resto de las cajas no cabía "
+                f"ahí aunque sobrara espacio en otros pallets. Es el cuello de botella real" + nota_empaquetado
+                + " Subir el factor de seguridad de volumen (si el empaquetado 3D real lo permite) o "
+                "usar un avión más grande ayudaría a cargar más."
+            )
+        elif vol_pct_permitido >= 0.9 > peso_pct:
+            st.info(
+                "El **volumen** agregado es el cuello de botella: el avión se llena de espacio "
+                "mucho antes que de peso — típico en carga de flores (baja densidad, poco peso por "
+                "m³). Subir el factor de seguridad de volumen, usar un avión más grande, o reducir "
+                "el % de carga no apilable del stock ayudaría a cargar más ingreso."
+            )
+        elif peso_pct >= 0.9 > vol_pct_permitido:
+            st.info(
+                "El **peso** agregado es el cuello de botella: se llegó al payload máximo del avión "
+                "con volumen de sobra. Poco común con flores, pero puede pasar si el stock tiene "
+                "mucha carga densa (agua, contenedores, etc.)."
+            )
+        elif vol_pct_permitido >= 0.9 and peso_pct >= 0.9:
+            st.info("Volumen y peso están al límite a la vez: el avión está prácticamente lleno.")
+        else:
+            st.info(
+                "Ni el volumen ni el peso (ni en total ni en ningún pallet individual) están al "
+                "límite — el modelo se detuvo antes por el balance (centro de gravedad) o porque no "
+                "quedan más cajas en el stock que convenga agregar (obligatorias aparte, todas las "
+                "que agregan valor ya están)."
+            )
+
+        if es_modo_meta and not resultado.cumple_meta:
+            diferencia_por_empaquetado = resultado.ingreso_maximo_posible - resultado.ingreso_total
+            st.markdown(
+                f"**¿Sumar otras cajas y sacar otras daría más plata?** No: el ingreso máximo que "
+                f"matemáticamente se puede lograr con este stock y la capacidad de este avión (peso, "
+                f"volumen y balance) es ${resultado.ingreso_maximo_posible:,.0f} — ninguna otra "
+                "combinación de paquetes puede superar ese techo, la Etapa A ya lo prueba al "
+                "resolverlo. "
+                + (
+                    f"Lo cargado aquí (${resultado.ingreso_total:,.0f}) es algo menos que ese techo "
+                    "porque se sacrificaron "
+                    f"${diferencia_por_empaquetado:,.0f} de ingreso a cambio de aprovechar mejor el "
+                    "espacio disponible. "
+                    if diferencia_por_empaquetado > 1
+                    else ""
+                )
+                + f"Para cerrar los ${resultado.faltante_para_meta_usd:,.0f} que faltan hace falta "
+                "más capacidad (avión más grande o más factor de seguridad de volumen) o más cajas "
+                "de alto valor en el stock — no una mejor selección de las mismas cajas."
+            )
+
+        no_seleccionados = sorted(resultado.no_asignados, key=lambda p: -p.densidad_valor)[:8]
+        if no_seleccionados:
+            st.markdown(
+                "**Paquetes de mayor valor por m³ que quedaron fuera** — los que más convendría "
+                "meter si hubiera más espacio o peso disponible (y por qué el modelo los descartó: "
+                "compara su volumen/peso contra lo que queda libre arriba):"
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        dict(
+                            id=p.id, producto=p.tipo_producto, ingreso_usd=p.ingreso_usd,
+                            volumen_m3=round(p.volumen_m3, 3), ingreso_por_m3=round(p.densidad_valor, 0),
+                            peso_kg=p.peso_kg,
+                        )
+                        for p in no_seleccionados
+                    ]
+                ),
+                width='stretch', height=250,
             )
 
     if n_no_colocados_3d:
