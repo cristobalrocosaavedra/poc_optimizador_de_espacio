@@ -17,7 +17,12 @@ import streamlit as st
 from optimizador.datos_simulados import generar_catalogo_paquetes, crear_avion
 from optimizador.empaquetado_3d import empaquetar_posicion
 from optimizador.entidades import Paquete
-from optimizador.optimizador_carga import optimizar, optimizar_con_meta, repartir_obligatorio_en_fila
+from optimizador.optimizador_carga import (
+    MARGEN_SUPERIOR_META,
+    optimizar,
+    optimizar_con_meta,
+    repartir_obligatorio_en_fila,
+)
 from optimizador.visualizacion import figura_avion, figura_posicion
 
 st.set_page_config(page_title="Optimizador de carga aérea", layout="wide")
@@ -521,26 +526,92 @@ if "resultado" in st.session_state:
             )
 
     with tab_no_asignados:
+        ids_no_colocados_etapa_b = {c.id for e in empaques for c in e.no_colocadas}
         todos_no_embarcados = list(resultado.no_asignados) + [
             c for e in empaques for c in e.no_colocadas
         ]
         if todos_no_embarcados:
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        dict(
-                            id=p.id, producto=p.tipo_producto, cliente=p.cliente,
-                            peso_kg=p.peso_kg, ingreso_usd=p.ingreso_usd,
-                            apilable=p.apilable, riesgo_alto=p.riesgo_alto,
-                        )
-                        for p in todos_no_embarcados
-                    ]
-                ),
-                width='stretch',
+            # Peso/volumen libre real por posición, con lo que efectivamente quedó
+            # cargado (post Etapa B) — mismo criterio de capacidad efectiva que usa
+            # el panel de diagnóstico (factor_disponibilidad * factor_seguridad).
+            peso_libre_pos = {}
+            vol_libre_pos = {}
+            for e in empaques:
+                peso_usado = sum(c.paquete.peso_kg for c in e.colocadas)
+                vol_usado = sum(c.paquete.volumen_m3 for c in e.colocadas)
+                peso_libre_pos[e.posicion.id] = factor_disponibilidad * e.posicion.peso_max_kg - peso_usado
+                vol_libre_pos[e.posicion.id] = (
+                    factor_disponibilidad * factor_seguridad * e.posicion.volumen_max_m3 - vol_usado
+                )
+            peso_libre_avion = factor_disponibilidad * avion.peso_max_carga_kg - peso_total
+
+            techo_meta = (
+                resultado.monto_objetivo_usd * (1 + MARGEN_SUPERIOR_META)
+                if es_modo_meta and resultado.monto_objetivo_usd
+                else None
             )
-            st.metric(
-                "Ingreso no capturado", f"${sum(p.ingreso_usd for p in todos_no_embarcados):,.0f}"
+
+            filas_no_embarcados = []
+            for p in todos_no_embarcados:
+                cabe_en_pallet = any(
+                    p.peso_kg <= peso_libre_pos[pos_id] + 1e-6 and p.volumen_m3 <= vol_libre_pos[pos_id] + 1e-6
+                    for pos_id in peso_libre_pos
+                )
+                cabe_en_avion = p.peso_kg <= peso_libre_avion + 1e-6
+                excede_techo = (
+                    techo_meta is not None
+                    and (resultado.ingreso_total + p.ingreso_usd) > techo_meta + 1e-6
+                )
+
+                if p.id in ids_no_colocados_etapa_b:
+                    cabria = False
+                    razon = (
+                        "La Etapa A lo seleccionó, pero el empaquetado 3D no encontró dónde "
+                        "ubicarlo geométricamente (forma, apilamiento o contorno del pallet)."
+                    )
+                elif not (cabe_en_pallet and cabe_en_avion):
+                    cabria = False
+                    razon = "No queda peso/volumen libre (en ningún pallet, o en el payload total del avión) para agregarlo sin sacar otra caja."
+                elif excede_techo:
+                    cabria = True
+                    razon = (
+                        f"Cabría físicamente, pero sumar sus ${p.ingreso_usd:,.0f} pasaría el techo "
+                        f"de la meta (vas en ${resultado.ingreso_total:,.0f} de un techo de "
+                        f"${techo_meta:,.0f})."
+                    )
+                else:
+                    cabria = True
+                    razon = (
+                        "Cabría en peso/volumen (por pallet y en total) sin sacar nada — el balance "
+                        "(CG) combinado con el resto de la carga puede no permitirlo, o el solver no "
+                        "llegó a la solución exactamente óptima (ver estado del solver arriba)."
+                    )
+
+                filas_no_embarcados.append(
+                    dict(
+                        id=p.id, producto=p.tipo_producto, cliente=p.cliente,
+                        peso_kg=p.peso_kg, ingreso_usd=p.ingreso_usd,
+                        apilable=p.apilable, riesgo_alto=p.riesgo_alto,
+                        cabria_sin_sacar_nada="✅" if cabria else "❌",
+                        por_que_no=razon,
+                    )
+                )
+
+            st.caption(
+                "\"¿Cabría sin sacar nada?\": chequeo agregado de peso/volumen libre por pallet y en "
+                "el avión — no garantiza que la geometría 3D real lo acomode (mismo nivel de "
+                "aproximación que el resto del diagnóstico), y no revisa el balance (CG)."
             )
+            st.dataframe(pd.DataFrame(filas_no_embarcados), width='stretch')
+
+            n_cabrian = sum(1 for f in filas_no_embarcados if f["cabria_sin_sacar_nada"] == "✅")
+            ingreso_cabria = sum(
+                p.ingreso_usd for p, f in zip(todos_no_embarcados, filas_no_embarcados)
+                if f["cabria_sin_sacar_nada"] == "✅"
+            )
+            k1, k2 = st.columns(2)
+            k1.metric("Ingreso no capturado", f"${sum(p.ingreso_usd for p in todos_no_embarcados):,.0f}")
+            k2.metric(f"De eso, cabría sin sacar nada ({n_cabrian} cajas)", f"${ingreso_cabria:,.0f}")
         else:
             st.success("¡Toda la carga disponible fue embarcada!")
 else:
