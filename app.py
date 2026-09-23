@@ -193,6 +193,28 @@ if st.session_state.get("historial_despachos"):
     with st.expander(f"📋 Historial de despacho ({len(st.session_state['historial_despachos'])} avión(es) ya cargados)", expanded=False):
         st.dataframe(pd.DataFrame(st.session_state["historial_despachos"]), width='stretch')
 
+if n_avion_actual > int(total_aviones_fila):
+    df_restante = st.session_state["df_paquetes"]
+    st.success(f"✅ Fila completa: los {int(total_aviones_fila)} aviones planeados ya despacharon.")
+    kstock1, kstock2 = st.columns(2)
+    kstock1.metric("Stock sin embarcar", f"{len(df_restante)} cajas")
+    kstock2.metric(
+        "Ingreso no capturado",
+        f"${df_restante['ingreso_usd'].sum():,.0f}" if len(df_restante) else "$0",
+    )
+    st.caption(
+        "Que quede stock sin embarcar no es un error por sí solo — el stock simulado es el de "
+        "toda la temporada, no tiene por qué caber completo en la fila de aviones que planeaste. "
+        "Si esperabas que la fila absorbiera todo, compara este remanente contra la capacidad "
+        "total de los aviones que usaste."
+    )
+    st.info(
+        "¿Quieres seguir despachando con un avión adicional? Sube **\"Aviones planeados en esta "
+        "fila\"** en la barra lateral a un número mayor que el actual y este panel se habilita de "
+        "nuevo."
+    )
+    st.stop()
+
 col_izq, col_der = st.columns([1, 1])
 with col_izq:
     st.subheader(f"Stock disponible (avión #{n_avion_actual} toma de aquí)")
@@ -258,6 +280,20 @@ with col_izq:
     kstock2.metric("Ingreso potencial del stock", f"${sum(p.ingreso_usd for p in paquetes):,.0f}")
 
     aviones_restantes = max(1, int(total_aviones_fila) - (n_avion_actual - 1))
+    capacidad_estimada_fila = aviones_restantes * _monto_objetivo_sugerido(
+        avion, factor_seguridad, factor_disponibilidad
+    )
+    ingreso_restante = sum(p.ingreso_usd for p in paquetes)
+    if ingreso_restante > capacidad_estimada_fila * 1.05:
+        st.warning(
+            f"⚠️ El stock restante (\\${ingreso_restante:,.0f}) supera la capacidad estimada de "
+            f"los {aviones_restantes} avión(es) que quedan en la fila (~\\${capacidad_estimada_fila:,.0f}, "
+            f"asumiendo que todos son {avion.modelo} con la disponibilidad y factor de seguridad "
+            "actuales) — es esperable que quede stock sin embarcar al terminar la fila. Si quieres "
+            "que absorba más, sube \"Aviones planeados en esta fila\", usa un avión más grande, o "
+            "revisa el tamaño del stock."
+        )
+
     paquetes_efectivos, n_obligatorio_forzado, n_obligatorio_pospuesto = repartir_obligatorio_en_fila(
         paquetes, aviones_restantes,
     )

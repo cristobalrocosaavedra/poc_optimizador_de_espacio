@@ -113,7 +113,11 @@ Luego, en la app:
    stock lo que ese avión realmente cargó, guarda el resultado en el
    historial de despacho, y pasa al avión siguiente — que toma lo que
    sobró.
-5. Repite para cada avión de la fila. El botón "Generar stock nuevo"
+5. Repite para cada avión de la fila. Si el stock restante supera lo que la
+   fila que queda puede absorber, la app avisa antes de que sigas cargando.
+   Al despachar el último avión planeado, la fila se cierra (no puedes
+   seguir agregando aviones "de más" sin subir explícitamente "Aviones
+   planeados en esta fila" en el sidebar). El botón "Generar stock nuevo"
    reinicia todo (stock + historial) si quieres empezar de cero.
 
 Con catálogos grandes (>1000 cajas) el avión empieza a saturarse en volumen
