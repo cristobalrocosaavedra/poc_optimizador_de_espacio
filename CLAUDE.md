@@ -179,9 +179,29 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   causa. Arreglado (no es un bug del packer, es expectativa mal puesta): se agregó un aviso
   (`st.caption`) junto al slider en `app.py` cuando el valor supera 0.85, y se mejoró el `help=`
   del slider para explicar el trade-off. El default (0.85) sigue siendo un buen punto de
-  equilibrio — no lo bajes sin pedirlo el usuario, y si alguien pide mejorar el ratio
-  colocadas/asignadas en vez de solo avisar, es un cambio a la heurística de
-  `empaquetado_3d.py` (mayor, requiere remedir con catálogos grandes, no un ajuste de UI).
+  equilibrio — no lo bajes sin pedirlo el usuario.
+- **Ya se probó un segundo pase de empaquetado entre posiciones (cross-position retry) — el ROI no
+  dio, no lo reintentes sin nueva evidencia**: el usuario pidió una solución real (no solo el
+  aviso de arriba) para las cajas que la Etapa A asigna pero el empaquetado 3D no logra colocar.
+  Se implementó `empaquetar_avion(avion, asignacion)` en `empaquetado_3d.py` (construida y
+  revertida en la misma sesión, no quedó en el código): cuando una caja no cabe en su posición
+  asignada, prueba otras posiciones del avión — candidatas ordenadas por menor `|Δbrazo_m|`
+  respecto a la posición original (las parejas izquierdo/derecho de una misma estación comparten
+  `brazo_m`, o sea costo de CG cero, así que se prueban primero) — y solo acepta el cambio si el
+  CG resultante del avión completo (recalculado con lo realmente colocado) se mantiene dentro de
+  `cg_min_m`/`cg_max_m`; si no, lo descarta sin dejar el avión peor que antes. Medido con B767F,
+  n=4000, seed=42, factor_seguridad=0.85: recuperó solo 15 de las 83 cajas descartadas (967→982
+  colocadas, ~18% del hueco) a cambio de **+12 segundos** de tiempo de empaquetado (subía a +29s
+  con factor_seguridad=1.00) — y de esas 15, **0 vinieron del pallet gemelo de la misma estación**
+  (todas tuvieron que cruzar de estación, gastando presupuesto de CG), porque Etapa A reparte la
+  carga de forma bastante pareja entre posiciones: si una posición está sobre-prometida por el
+  packer, casi siempre las demás también lo están, así que rara vez sobra espacio real en otro
+  lado. Con ese ROI (~18% de mejora, +12-29s de espera) el usuario decidió explícitamente NO
+  activarlo — más vale seguir recomendando bajar `factor_seguridad_volumen` (gratis, mucho más
+  efectivo: a 0.70 el descarte baja a 1.7% sin este código). Si en el futuro se vuelve a pedir,
+  esta nota ahorra remedir desde cero — pero antes de reimplementarlo, confirma que el trade-off
+  medido aquí realmente cambió (ej. con un catálogo/avión donde las posiciones SÍ queden
+  desparejas en ocupación).
 
 ## Tiempos de solve medidos (referencia, no los repitas de cero)
 
