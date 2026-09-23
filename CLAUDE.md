@@ -190,6 +190,26 @@ se mueven todos. En todos los modelos, la **suma de los topes de pallet
 individuales manda antes que el payload del avión** (mismo patrón ya
 documentado arriba para B767F) — es de esperar, no un bug nuevo por avión.
 
+- **`total_aviones_fila` no frenaba nada — se podía despachar un avión #6 con "5 planeados"**:
+  solo se usaba para repartir la carga obligatoria (`aviones_restantes = max(1,
+  int(total_aviones_fila) - (n_avion_actual - 1))`, con el `max(1, ...)` evitando que llegara a
+  0 o negativo, pero sin cortar el flujo). Encontrado por el usuario probando en su Mac: puso 5
+  aviones, despachó los 5, y la app lo dejó seguir armando un 6to como si nada. Arreglado con un
+  gate explícito en `app.py`: si `n_avion_actual > int(total_aviones_fila)`, se muestra un panel
+  de "Fila completa" (stock sin embarcar + ingreso no capturado) y `st.stop()` — no se puede
+  seguir hasta que subas manualmente "Aviones planeados en esta fila" en el sidebar.
+- **Aviso de capacidad de la fila vs. stock restante**: antes de que el usuario llegue al final de
+  la fila y se sorprenda con cajas sin embarcar, `app.py` compara el ingreso potencial del stock
+  restante contra una estimación de la capacidad total de los aviones que quedan
+  (`aviones_restantes * _monto_objetivo_sugerido(...)`, asumiendo que todos los aviones
+  restantes son del mismo modelo/disponibilidad/factor de seguridad que el avión actual — no se
+  puede saber el modelo real de aviones futuros de antemano) y muestra un `st.warning` si el
+  stock excede esa capacidad en más de 5%. Es una estimación, no un tope duro — el usuario sigue
+  pudiendo despachar igual; solo avisa. Decisión explícita del usuario vía `AskUserQuestion`:
+  "solo avisar antes de empezar", **no** que el último avión de la fila cambie de comportamiento
+  y maximice/absorba todo lo que quede — eso se descartó a propósito, no lo implementes sin que
+  lo pidan.
+
 ## Decisiones de producto ya tomadas (no las reabras sin que el usuario lo pida)
 
 - El monto objetivo por avión **no lo optimiza el modelo** — es un dato
