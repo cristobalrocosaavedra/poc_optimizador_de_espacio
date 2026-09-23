@@ -202,6 +202,33 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   esta nota ahorra remedir desde cero — pero antes de reimplementarlo, confirma que el trade-off
   medido aquí realmente cambió (ej. con un catálogo/avión donde las posiciones SÍ queden
   desparejas en ocupación).
+- **"Cumple meta" e "Ingreso total" eran de la Etapa A (el plan), no de lo realmente cargado —
+  podían decir "✅ Sí" con el avión por debajo del piso real**: encontrado por el usuario viendo
+  capturas de un avión que decía "Cumple meta ✅" con espacio visiblemente vacío. Medido (B767F,
+  n=3000, seed=42, pct_obligatorio=0.10, monto_objetivo=$23.500, factor_seguridad=0.85): Etapa A
+  planifica $23.967 (dispara `cumple_meta=True` porque está pegada al techo), pero el empaquetado
+  3D real solo coloca $21.497 — **por debajo del piso real ($23.030)**. La causa: `resultado.
+  cumple_meta`/`ingreso_total` (usados en el headline de `app.py`) son propiedades de
+  `ResultadoOptimizacion`, calculadas de la asignación de la Etapa A — nunca se recalculaban con
+  lo que el empaquetado 3D realmente logra colocar (`ingreso_cargado_real`, ya existía pero solo
+  se usaba para un aviso dentro del expander colapsado — y ese expander se colapsaba por default
+  precisamente cuando `cumple_meta` (Etapa A) era True, escondiendo el aviso justo cuando más
+  importaba). Nótese que esto **no** es por saltarse la Fase 2 del solver — se verificó que la
+  Fase 2 casi nunca aporta aquí porque la Fase 1 (maximizar ingreso sujeto a ≤techo) ya selecciona
+  ~76% de volumen por sí sola (maximizar ingreso agrega cajas hasta el techo, lo cual de paso ya
+  usa bastante volumen) — el ~76% que la Etapa A "cree" usar YA está por encima del techo práctico
+  de empaquetado 3D (~74-75%, ver gotcha de arriba), así que el "mucho espacio vacío" que se ve en
+  el 3D es la brecha Etapa A→B ya documentada (factor_seguridad), no una falla de selección.
+  Arreglado en `app.py`: se calculan `cumple_meta_real`/`faltante_real` a partir de
+  `ingreso_cargado_real` (post empaquetado 3D) y se usan en el headline ("Ingreso total", "Cumple
+  meta"), en el expander de diagnóstico (que ahora se abre solo cuando el resultado REAL no
+  cumple) y en `historial_despachos` (`ingreso_logrado`). Se mantiene `cumple_meta_teorico`
+  (`resultado.cumple_meta`, sin tocar) para el bloque de diagnóstico que explica el techo
+  matemático de la Etapa A (sigue siendo válido para ESE análisis específico) — y se agregó un
+  mensaje nuevo para el caso "Etapa A decía que sí, pero el empaquetado real no llegó", distinto
+  del caso "ni la Etapa A llegaba" (mensajes de causa raíz distinta, no mezclarlos). Con esto,
+  ver "Cumple meta ✅" real puede requerir bajar `factor_seguridad_volumen` incluso cuando antes
+  parecía que sobraba margen — es esperado, no una regresión.
 
 ## Tiempos de solve medidos (referencia, no los repitas de cero)
 
