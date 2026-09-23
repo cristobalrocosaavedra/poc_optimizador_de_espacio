@@ -24,6 +24,7 @@ from optimizador.empaquetado_3d import empaquetar_posicion
 from optimizador.entidades import Paquete
 from optimizador.optimizador_carga import (
     MARGEN_SUPERIOR_META,
+    TOLERANCIA_META_RELATIVA,
     optimizar,
     optimizar_con_meta,
     repartir_obligatorio_en_fila,
@@ -380,21 +381,32 @@ if "resultado" in st.session_state:
     n_no_colocados_3d = sum(len(e.no_colocadas) for e in empaques)
     peso_total = sum(p.peso_kg for e in empaques for p in [c.paquete for c in e.colocadas])
     vol_total = sum(c.paquete.volumen_m3 for e in empaques for c in e.colocadas)
+    ingreso_cargado_real = sum(c.paquete.ingreso_usd for e in empaques for c in e.colocadas)
 
     es_modo_meta = resultado.monto_objetivo_usd is not None
+    # "Cumple meta" e "Ingreso total" se muestran con lo REALMENTE cargado (post empaquetado 3D),
+    # no con lo que la Etapa A asignó por peso/volumen agregado — si no, un avión puede mostrar
+    # "cumple meta" aunque el empaquetado real haya perdido cajas y quede por debajo del piso.
+    cumple_meta_teorico = resultado.cumple_meta
+    if es_modo_meta:
+        cumple_meta_real = ingreso_cargado_real >= resultado.monto_objetivo_usd * (1 - TOLERANCIA_META_RELATIVA)
+        faltante_real = max(0.0, resultado.monto_objetivo_usd - ingreso_cargado_real)
+    else:
+        cumple_meta_real = True
+        faltante_real = 0.0
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Ingreso total", f"${resultado.ingreso_total:,.0f}")
+    k1.metric("Ingreso total", f"${ingreso_cargado_real:,.0f}")
     if es_modo_meta:
         k2.metric("Meta objetivo", f"${resultado.monto_objetivo_usd:,.0f}")
         k3.metric(
-            "Cumple meta" if resultado.cumple_meta else "Falta para la meta",
-            "✅ Sí" if resultado.cumple_meta else f"${resultado.faltante_para_meta_usd:,.0f}",
+            "Cumple meta" if cumple_meta_real else "Falta para la meta",
+            "✅ Sí" if cumple_meta_real else f"${faltante_real:,.0f}",
         )
     else:
         k2.metric(
             "Utilización de ingreso",
-            f"{100 * resultado.ingreso_total / resultado.ingreso_potencial:.1f}%"
+            f"{100 * ingreso_cargado_real / resultado.ingreso_potencial:.1f}%"
             if resultado.ingreso_potencial else "—",
         )
         k3.metric("Cajas cargadas", f"{n_colocados_3d} / {len(paquetes)}")
@@ -407,18 +419,25 @@ if "resultado" in st.session_state:
 
     if es_modo_meta:
         st.caption(f"Cajas cargadas: {n_colocados_3d} / {len(paquetes)} — objetivo: acercarse a la meta sin pasarse, y entre eso, usar bien el volumen y peso disponibles.")
-        if not resultado.cumple_meta:
+        if not cumple_meta_real and cumple_meta_teorico:
+            st.warning(
+                f"La Etapa A había planificado llegar a \\${resultado.ingreso_total:,.0f} (cumplía la "
+                f"meta en el papel), pero el empaquetado 3D real no logró ubicar todo lo asignado — "
+                f"lo que realmente queda cargado es \\${ingreso_cargado_real:,.0f}, "
+                f"\\${faltante_real:,.0f} por debajo de la meta. Baja el \"Factor de seguridad de "
+                "volumen por pallet\" en la barra lateral (ver detalle en el diagnóstico de abajo)."
+            )
+        elif not cumple_meta_real:
             st.warning(
                 f"No se alcanzó la meta de \\${resultado.monto_objetivo_usd:,.0f}: con el catálogo y "
                 f"espacio disponibles, el máximo posible es \\${resultado.ingreso_maximo_posible:,.0f} "
-                f"(faltan \\${resultado.faltante_para_meta_usd:,.0f}). Agrega más cajas o revisa el catálogo."
+                f"(faltan \\${faltante_real:,.0f}). Agrega más cajas o revisa el catálogo."
             )
 
     with st.expander(
         "🔍 ¿Por qué este resultado? (diagnóstico)",
-        expanded=es_modo_meta and not resultado.cumple_meta,
+        expanded=es_modo_meta and not cumple_meta_real,
     ):
-        ingreso_cargado_real = sum(c.paquete.ingreso_usd for e in empaques for c in e.colocadas)
         if abs(ingreso_cargado_real - resultado.ingreso_total) > 1:
             st.warning(
                 f"La Etapa A seleccionó \\${resultado.ingreso_total:,.0f} por peso/volumen agregado, "
@@ -507,7 +526,7 @@ if "resultado" in st.session_state:
                 "que agregan valor ya están)."
             )
 
-        if es_modo_meta and not resultado.cumple_meta:
+        if es_modo_meta and not cumple_meta_teorico:
             diferencia_por_empaquetado = resultado.ingreso_maximo_posible - resultado.ingreso_total
             st.markdown(
                 f"**¿Sumar otras cajas y sacar otras daría más plata?** No: el ingreso máximo que "
@@ -516,7 +535,7 @@ if "resultado" in st.session_state:
                 "combinación de paquetes puede superar ese techo, la Etapa A ya lo prueba al "
                 "resolverlo. "
                 + (
-                    f"Lo cargado aquí (\\${resultado.ingreso_total:,.0f}) es algo menos que ese techo "
+                    f"Lo asignado aquí (\\${resultado.ingreso_total:,.0f}) es algo menos que ese techo "
                     "porque se sacrificaron "
                     f"\\${diferencia_por_empaquetado:,.0f} de ingreso a cambio de aprovechar mejor el "
                     "espacio disponible. "
@@ -568,7 +587,7 @@ if "resultado" in st.session_state:
             dict(
                 avion=f"Avión #{n_avion_actual}", modelo=avion.modelo,
                 monto_objetivo=resultado.monto_objetivo_usd,
-                ingreso_logrado=round(resultado.ingreso_total, 0),
+                ingreso_logrado=round(ingreso_cargado_real, 0),
                 cajas=n_colocados_3d,
                 utilizacion_volumen_pct=round(100 * vol_total / avion.volumen_total_m3, 1),
             )

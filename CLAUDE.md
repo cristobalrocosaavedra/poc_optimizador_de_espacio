@@ -179,9 +179,56 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   causa. Arreglado (no es un bug del packer, es expectativa mal puesta): se agregó un aviso
   (`st.caption`) junto al slider en `app.py` cuando el valor supera 0.85, y se mejoró el `help=`
   del slider para explicar el trade-off. El default (0.85) sigue siendo un buen punto de
-  equilibrio — no lo bajes sin pedirlo el usuario, y si alguien pide mejorar el ratio
-  colocadas/asignadas en vez de solo avisar, es un cambio a la heurística de
-  `empaquetado_3d.py` (mayor, requiere remedir con catálogos grandes, no un ajuste de UI).
+  equilibrio — no lo bajes sin pedirlo el usuario.
+- **Ya se probó un segundo pase de empaquetado entre posiciones (cross-position retry) — el ROI no
+  dio, no lo reintentes sin nueva evidencia**: el usuario pidió una solución real (no solo el
+  aviso de arriba) para las cajas que la Etapa A asigna pero el empaquetado 3D no logra colocar.
+  Se implementó `empaquetar_avion(avion, asignacion)` en `empaquetado_3d.py` (construida y
+  revertida en la misma sesión, no quedó en el código): cuando una caja no cabe en su posición
+  asignada, prueba otras posiciones del avión — candidatas ordenadas por menor `|Δbrazo_m|`
+  respecto a la posición original (las parejas izquierdo/derecho de una misma estación comparten
+  `brazo_m`, o sea costo de CG cero, así que se prueban primero) — y solo acepta el cambio si el
+  CG resultante del avión completo (recalculado con lo realmente colocado) se mantiene dentro de
+  `cg_min_m`/`cg_max_m`; si no, lo descarta sin dejar el avión peor que antes. Medido con B767F,
+  n=4000, seed=42, factor_seguridad=0.85: recuperó solo 15 de las 83 cajas descartadas (967→982
+  colocadas, ~18% del hueco) a cambio de **+12 segundos** de tiempo de empaquetado (subía a +29s
+  con factor_seguridad=1.00) — y de esas 15, **0 vinieron del pallet gemelo de la misma estación**
+  (todas tuvieron que cruzar de estación, gastando presupuesto de CG), porque Etapa A reparte la
+  carga de forma bastante pareja entre posiciones: si una posición está sobre-prometida por el
+  packer, casi siempre las demás también lo están, así que rara vez sobra espacio real en otro
+  lado. Con ese ROI (~18% de mejora, +12-29s de espera) el usuario decidió explícitamente NO
+  activarlo — más vale seguir recomendando bajar `factor_seguridad_volumen` (gratis, mucho más
+  efectivo: a 0.70 el descarte baja a 1.7% sin este código). Si en el futuro se vuelve a pedir,
+  esta nota ahorra remedir desde cero — pero antes de reimplementarlo, confirma que el trade-off
+  medido aquí realmente cambió (ej. con un catálogo/avión donde las posiciones SÍ queden
+  desparejas en ocupación).
+- **"Cumple meta" e "Ingreso total" eran de la Etapa A (el plan), no de lo realmente cargado —
+  podían decir "✅ Sí" con el avión por debajo del piso real**: encontrado por el usuario viendo
+  capturas de un avión que decía "Cumple meta ✅" con espacio visiblemente vacío. Medido (B767F,
+  n=3000, seed=42, pct_obligatorio=0.10, monto_objetivo=$23.500, factor_seguridad=0.85): Etapa A
+  planifica $23.967 (dispara `cumple_meta=True` porque está pegada al techo), pero el empaquetado
+  3D real solo coloca $21.497 — **por debajo del piso real ($23.030)**. La causa: `resultado.
+  cumple_meta`/`ingreso_total` (usados en el headline de `app.py`) son propiedades de
+  `ResultadoOptimizacion`, calculadas de la asignación de la Etapa A — nunca se recalculaban con
+  lo que el empaquetado 3D realmente logra colocar (`ingreso_cargado_real`, ya existía pero solo
+  se usaba para un aviso dentro del expander colapsado — y ese expander se colapsaba por default
+  precisamente cuando `cumple_meta` (Etapa A) era True, escondiendo el aviso justo cuando más
+  importaba). Nótese que esto **no** es por saltarse la Fase 2 del solver — se verificó que la
+  Fase 2 casi nunca aporta aquí porque la Fase 1 (maximizar ingreso sujeto a ≤techo) ya selecciona
+  ~76% de volumen por sí sola (maximizar ingreso agrega cajas hasta el techo, lo cual de paso ya
+  usa bastante volumen) — el ~76% que la Etapa A "cree" usar YA está por encima del techo práctico
+  de empaquetado 3D (~74-75%, ver gotcha de arriba), así que el "mucho espacio vacío" que se ve en
+  el 3D es la brecha Etapa A→B ya documentada (factor_seguridad), no una falla de selección.
+  Arreglado en `app.py`: se calculan `cumple_meta_real`/`faltante_real` a partir de
+  `ingreso_cargado_real` (post empaquetado 3D) y se usan en el headline ("Ingreso total", "Cumple
+  meta"), en el expander de diagnóstico (que ahora se abre solo cuando el resultado REAL no
+  cumple) y en `historial_despachos` (`ingreso_logrado`). Se mantiene `cumple_meta_teorico`
+  (`resultado.cumple_meta`, sin tocar) para el bloque de diagnóstico que explica el techo
+  matemático de la Etapa A (sigue siendo válido para ESE análisis específico) — y se agregó un
+  mensaje nuevo para el caso "Etapa A decía que sí, pero el empaquetado real no llegó", distinto
+  del caso "ni la Etapa A llegaba" (mensajes de causa raíz distinta, no mezclarlos). Con esto,
+  ver "Cumple meta ✅" real puede requerir bajar `factor_seguridad_volumen` incluso cuando antes
+  parecía que sobraba margen — es esperado, no una regresión.
 
 ## Tiempos de solve medidos (referencia, no los repitas de cero)
 
