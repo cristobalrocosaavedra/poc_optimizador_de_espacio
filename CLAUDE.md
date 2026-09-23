@@ -157,6 +157,32 @@ resuelve bien en este runtime — usa `.cjs` + `require`).
   attribute 'paquete'` — es `c.id` directo. Ya pasó una vez en la tabla de
   "No embarcados" de `app.py`.
 
+- **Subir `factor_seguridad_volumen` por encima de ~0.85 no carga más cajas, solo hace que la
+  Etapa A seleccione más cajas que luego el empaquetado 3D no logra colocar** — encontrado por el
+  usuario ("en cada paso como que optimizó pero igual quedaron paquetes abajo, que no se
+  reacomodan bien") tras subir el slider a 0.90. Medido con B767F, n=4000, seed=42,
+  pct_obligatorio=0.08 (script ad-hoc, no en `probar_escenarios.py`):
+
+  | factor_seguridad | Etapa A asigna | Etapa B coloca | Etapa B NO coloca (geometría) |
+  |---|---|---|---|
+  | 0.70 | 869  | 854 | 15 (1.7%) |
+  | 0.75 | 937  | 917 | 20 (2.1%) |
+  | 0.80 | 993  | 945 | 48 (4.8%) |
+  | 0.85 (default) | 1050 | 967 | 83 (7.9%) |
+  | 0.90 | 1104 | 967 | 137 (12.4%) |
+  | 0.95 | 1161 | 990 | 171 (14.7%) |
+  | 1.00 | 1221 | 990 | 231 (18.9%) |
+
+  Las cajas realmente colocadas (columna "Etapa B coloca") prácticamente no suben pasado 0.85
+  (967→990 hasta 1.00) mientras el descarte por geometría se dispara — confirma el techo práctico
+  de ~74-75% ya documentado arriba, ahora cuantificado contra el `factor_seguridad_volumen` que lo
+  causa. Arreglado (no es un bug del packer, es expectativa mal puesta): se agregó un aviso
+  (`st.caption`) junto al slider en `app.py` cuando el valor supera 0.85, y se mejoró el `help=`
+  del slider para explicar el trade-off. El default (0.85) sigue siendo un buen punto de
+  equilibrio — no lo bajes sin pedirlo el usuario, y si alguien pide mejorar el ratio
+  colocadas/asignadas en vez de solo avisar, es un cambio a la heurística de
+  `empaquetado_3d.py` (mayor, requiere remedir con catálogos grandes, no un ajuste de UI).
+
 ## Tiempos de solve medidos (referencia, no los repitas de cero)
 
 `optimizar_con_meta()` (dos solves MILP) con B767F, `factor_seguridad=0.85`:

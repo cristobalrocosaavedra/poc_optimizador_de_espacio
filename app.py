@@ -100,8 +100,20 @@ with st.sidebar:
     ) / 100.0
     factor_seguridad = st.slider(
         "Factor de seguridad de volumen por pallet", 0.5, 1.0, 0.85, step=0.05,
-        help="Margen que deja la Etapa A para que el empaquetado 3D real siempre pueda acomodar la carga.",
+        help="Margen que deja la Etapa A para que el empaquetado 3D real siempre pueda acomodar la "
+        "carga. El empaquetado 3D real (heurística de acomodo por forma, no un tetris perfecto) "
+        "rara vez supera ~74-75% de aprovechamiento del volumen aunque nada sea no apilable — "
+        "subir este factor bien por encima de eso no logra cargar más cajas, solo hace que la "
+        "Etapa A seleccione cajas de más que después no logran ubicarse geométricamente (quedan "
+        "en tierra igual, pero fue esfuerzo del solver desperdiciado en elegirlas).",
     )
+    if factor_seguridad > 0.85:
+        st.caption(
+            "⚠️ Con este factor por encima de ~0.85 es esperable que aumenten las cajas que la "
+            "Etapa A selecciona pero el empaquetado 3D no logra ubicar (avisado por avión en "
+            "\"¿Por qué este resultado?\") — no significa que se cargue más, solo que la selección "
+            "es menos precisa."
+        )
     generar = st.button(
         "🔄 Generar stock nuevo (reinicia la fila)", width='stretch',
         help="Regenera todo el stock desde cero y borra el historial de aviones ya despachados.",
